@@ -765,19 +765,23 @@ local function viewPlayersScreen()
         cachedPlayers = response.players
         
         clearScreen()
-        drawHeader("◆ TRUSTED PLAYERS ◆", "Global list across all dimensions")
+        drawHeader("◆ TRUSTED PLAYERS ◆", "Global and controller-specific lists")
+        
+        -- Display global players
+        gpu.setForeground(colors.warning)
+        gpu.set(5, 5, "GLOBAL TRUSTED (All Dimensions):")
         
         gpu.setForeground(colors.textDim)
-        gpu.set(10, 6, "PLAYER NAME")
-        gpu.set(50, 6, "STATUS")
+        gpu.set(7, 6, "PLAYER NAME")
+        gpu.set(50, 6, "SCOPE")
         
-        drawLine(10, 7, 60, "─")
+        drawLine(7, 7, 60, "─")
         
         local y = 8
-        for i = 1, math.min(15, #cachedPlayers) do
+        for i = 1, math.min(8, #cachedPlayers) do
             local player = cachedPlayers[i]
             gpu.setForeground(colors.text)
-            gpu.set(10, y, "• " .. player)
+            gpu.set(7, y, "• " .. player)
             
             gpu.setForeground(colors.success)
             gpu.set(50, y, "Global")
@@ -786,12 +790,74 @@ local function viewPlayersScreen()
         
         if #cachedPlayers == 0 then
             gpu.setForeground(colors.textDim)
-            gpu.set(10, 8, "(no trusted players)")
+            gpu.set(7, 8, "(no globally trusted players)")
+            y = 9
         end
         
-        if #cachedPlayers > 15 then
+        if #cachedPlayers > 8 then
             gpu.setForeground(colors.textDim)
-            gpu.set(10, y + 1, "... and " .. (#cachedPlayers - 15) .. " more")
+            gpu.set(7, y, "... and " .. (#cachedPlayers - 8) .. " more")
+            y = y + 1
+        end
+        
+        -- Get controllers to show their specific players
+        y = y + 1
+        gpu.setForeground(colors.warning)
+        gpu.set(5, y, "CONTROLLER-SPECIFIC TRUSTED:")
+        y = y + 1
+        
+        local ctrlResponse = sendAndWait({
+            command = "getControllers"
+        }, 5)
+        
+        if ctrlResponse and ctrlResponse.status == "success" and ctrlResponse.controllers then
+            local hasSpecificPlayers = false
+            
+            for _, ctrl in ipairs(ctrlResponse.controllers) do
+                -- Get specific players for this controller
+                local playersResponse = sendAndWait({
+                    command = "getControllerPlayers",
+                    controllerId = ctrl.id
+                }, 3)
+                
+                if playersResponse and playersResponse.status == "success" and playersResponse.players and #playersResponse.players > 0 then
+                    hasSpecificPlayers = true
+                    
+                    if y >= 23 then
+                        gpu.setForeground(colors.textDim)
+                        gpu.set(7, y, "... (more controllers below)")
+                        break
+                    end
+                    
+                    gpu.setForeground(colors.accent)
+                    local worldName = ctrl.world or "Unknown"
+                    if #worldName > 25 then worldName = worldName:sub(1, 22) .. "..." end
+                    gpu.set(7, y, worldName .. ":")
+                    y = y + 1
+                    
+                    for i = 1, math.min(3, #playersResponse.players) do
+                        if y >= 23 then break end
+                        
+                        gpu.setForeground(colors.textDim)
+                        gpu.set(9, y, "• " .. playersResponse.players[i])
+                        y = y + 1
+                    end
+                    
+                    if #playersResponse.players > 3 then
+                        gpu.setForeground(colors.textDim)
+                        gpu.set(9, y, "... and " .. (#playersResponse.players - 3) .. " more")
+                        y = y + 1
+                    end
+                end
+            end
+            
+            if not hasSpecificPlayers then
+                gpu.setForeground(colors.textDim)
+                gpu.set(7, y, "(no controller-specific players)")
+            end
+        else
+            gpu.setForeground(colors.textDim)
+            gpu.set(7, y, "(could not load controller info)")
         end
         
         drawFooter("Press any key to return...")
