@@ -647,6 +647,19 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             registerController(controllerId, msgData.controllerName or msgData.controller_name, msgData.worldName or msgData.world_name, msgData.turret_count)
         end
         
+        -- Send sync if requested
+        if msgData.request_sync then
+            local response = {
+                type = "sync_trusted",
+                players = trustedPlayers,
+                controller_players = controllerTrustedPlayers[controllerId] or {}
+            }
+            
+            local responseMsg = serialization.serialize(response)
+            local encrypted = encryptMessage(responseMsg)
+            modem.send(sender, PORT, encrypted or responseMsg)
+        end
+        
         stats.totalTurrets = 0
         for _, c in pairs(turretControllers) do
             stats.totalTurrets = stats.totalTurrets + c.turretCount
