@@ -1093,28 +1093,135 @@ local function adminLogin()
     clearScreen()
     drawAdminHeader("◆ ADMIN AUTHENTICATION ◆", "Server Administration Access")
     
-    drawBox(15, 6, 50, 12, 0x1F2937)
+    local boxWidth = 50
+    local boxHeight = 12
+    local boxX = math.floor((w - boxWidth) / 2)
+    local boxY = 7
+    
+    drawBox(boxX, boxY, boxWidth, boxHeight, 0x1F2937)
     
     gpu.setForeground(colors.warning)
-    gpu.set(17, 8, "⚠ RESTRICTED ACCESS")
+    local warningText = "⚠ RESTRICTED ACCESS"
+    local warningX = boxX + math.floor((boxWidth - unicode.len(warningText)) / 2)
+    gpu.set(warningX, boxY + 2, warningText)
+    
     gpu.setForeground(colors.textDim)
-    gpu.set(17, 9, "Authorized personnel only")
+    local authText = "Authorized personnel only"
+    local authX = boxX + math.floor((boxWidth - unicode.len(authText)) / 2)
+    gpu.set(authX, boxY + 3, authText)
     
     gpu.setForeground(colors.text)
-    local username = adminInput("Username: ", 12, false, 20)
+    gpu.set(boxX + 4, boxY + 5, "Username: ")
+    
+    -- Username input
+    local usernameX = boxX + 14
+    gpu.setBackground(0x1F2937)
+    gpu.fill(usernameX, boxY + 5, 30, 1, " ")
+    
+    local text = ""
+    local cursorVisible = true
+    local lastBlink = computer.uptime()
+    
+    while true do
+        if computer.uptime() - lastBlink > 0.5 then
+            cursorVisible = not cursorVisible
+            lastBlink = computer.uptime()
+            
+            gpu.setBackground(0x1F2937)
+            gpu.set(usernameX, boxY + 5, text .. (cursorVisible and "_" or " "))
+        end
+        
+        local eventData = {event.pull(0.1)}
+        if eventData[1] == "key_down" then
+            local _, _, char, code = table.unpack(eventData)
+            
+            if code == 28 then
+                break
+            elseif code == 14 and #text > 0 then
+                text = text:sub(1, -2)
+                gpu.setBackground(0x1F2937)
+                gpu.fill(usernameX, boxY + 5, 30, 1, " ")
+                gpu.set(usernameX, boxY + 5, text .. "_")
+                cursorVisible = true
+                lastBlink = computer.uptime()
+            elseif char and char >= 32 and char < 127 and #text < 20 then
+                text = text .. string.char(char)
+                gpu.setBackground(0x1F2937)
+                gpu.set(usernameX, boxY + 5, text .. "_")
+                cursorVisible = true
+                lastBlink = computer.uptime()
+            end
+        end
+    end
+    
+    local username = text
+    gpu.setBackground(0x1F2937)
+    gpu.set(usernameX, boxY + 5, text .. " ")
     
     if not username or username == "" then
+        gpu.setBackground(colors.bg)
         return false, nil
     end
     
-    local password = adminInput("Password: ", 14, true, 30)
+    -- Password input
+    gpu.setBackground(colors.bg)
+    gpu.setForeground(colors.text)
+    gpu.set(boxX + 4, boxY + 7, "Password: ")
+    
+    local passwordX = boxX + 14
+    gpu.setBackground(0x1F2937)
+    gpu.fill(passwordX, boxY + 7, 30, 1, " ")
+    
+    text = ""
+    cursorVisible = true
+    lastBlink = computer.uptime()
+    
+    while true do
+        if computer.uptime() - lastBlink > 0.5 then
+            cursorVisible = not cursorVisible
+            lastBlink = computer.uptime()
+            
+            gpu.setBackground(0x1F2937)
+            gpu.set(passwordX, boxY + 7, string.rep("•", #text) .. (cursorVisible and "_" or " "))
+        end
+        
+        local eventData = {event.pull(0.1)}
+        if eventData[1] == "key_down" then
+            local _, _, char, code = table.unpack(eventData)
+            
+            if code == 28 then
+                break
+            elseif code == 14 and #text > 0 then
+                text = text:sub(1, -2)
+                gpu.setBackground(0x1F2937)
+                gpu.fill(passwordX, boxY + 7, 30, 1, " ")
+                gpu.set(passwordX, boxY + 7, string.rep("•", #text) .. "_")
+                cursorVisible = true
+                lastBlink = computer.uptime()
+            elseif char and char >= 32 and char < 127 and #text < 30 then
+                text = text .. string.char(char)
+                gpu.setBackground(0x1F2937)
+                gpu.set(passwordX, boxY + 7, string.rep("•", #text) .. "_")
+                cursorVisible = true
+                lastBlink = computer.uptime()
+            end
+        end
+    end
+    
+    local password = text
+    gpu.setBackground(0x1F2937)
+    gpu.set(passwordX, boxY + 7, string.rep("•", #text) .. " ")
+    
+    gpu.setBackground(colors.bg)
     
     if not password or password == "" then
         return false, nil
     end
     
     gpu.setForeground(colors.textDim)
-    gpu.set(17, 16, "Authenticating...")
+    local authingText = "Authenticating..."
+    local authingX = boxX + math.floor((boxWidth - unicode.len(authingText)) / 2)
+    gpu.set(authingX, boxY + 10, authingText)
     os.sleep(0.5)
     
     if verifyAdminCredentials(username, password) then
@@ -1140,23 +1247,31 @@ local function adminMainMenu()
     clearScreen()
     drawAdminHeader("◆ ADMIN PANEL ◆", "Server Management Console")
     
-    drawBox(20, 6, 40, 14, 0x1F2937)
+    local boxWidth = 40
+    local boxHeight = 16
+    local boxX = math.floor((w - boxWidth) / 2)
+    local boxY = 7
+    
+    drawBox(boxX, boxY, boxWidth, boxHeight, 0x1F2937)
     
     gpu.setForeground(colors.accent)
-    gpu.set(22, 7, "═══════════════════════════════════════")
+    local lineX = boxX + 2
+    gpu.set(lineX, boxY + 1, string.rep("═", boxWidth - 4))
     
     gpu.setForeground(colors.text)
-    local menuY = 9
-    gpu.set(24, menuY, "[1] View All Admin Accounts")
-    gpu.set(24, menuY + 1, "[2] Create Admin Account")
-    gpu.set(24, menuY + 2, "[3] Delete Admin Account")
-    gpu.set(24, menuY + 3, "[4] View Activity Log")
-    gpu.set(24, menuY + 4, "[5] View Active Sessions")
-    gpu.set(24, menuY + 5, "[6] Manage Controllers")
-    gpu.set(24, menuY + 6, "[7] Exit Admin Mode")
+    local menuY = boxY + 3
+    local textX = boxX + 4
+    
+    gpu.set(textX, menuY, "[1] View All Admin Accounts")
+    gpu.set(textX, menuY + 1, "[2] Create Admin Account")
+    gpu.set(textX, menuY + 2, "[3] Delete Admin Account")
+    gpu.set(textX, menuY + 3, "[4] View Activity Log")
+    gpu.set(textX, menuY + 4, "[5] View Active Sessions")
+    gpu.set(textX, menuY + 5, "[6] Manage Controllers")
+    gpu.set(textX, menuY + 6, "[7] Exit Admin Mode")
     
     gpu.setForeground(colors.accent)
-    gpu.set(22, menuY + 8, "═══════════════════════════════════════")
+    gpu.set(lineX, menuY + 8, string.rep("═", boxWidth - 4))
     
     gpu.setForeground(colors.textDim)
     local adminCount = 0
@@ -1164,10 +1279,14 @@ local function adminMainMenu()
     local sessionCount = 0
     for _ in pairs(activeSessions) do sessionCount = sessionCount + 1 end
     
-    gpu.set(24, menuY + 9, "Admins: " .. adminCount .. " • Sessions: " .. sessionCount)
+    local statusText = "Admins: " .. adminCount .. " • Sessions: " .. sessionCount
+    local statusX = boxX + math.floor((boxWidth - unicode.len(statusText)) / 2)
+    gpu.set(statusX, menuY + 9, statusText)
     
     gpu.setForeground(colors.error)
-    gpu.set(22, h - 1, "Press F5 to exit admin mode")
+    local hintText = "Press F5 to exit admin mode"
+    local hintX = math.floor((w - unicode.len(hintText)) / 2)
+    gpu.set(hintX, h - 1, hintText)
     
     while true do
         local _, _, char, code = event.pull("key_down")
@@ -1242,10 +1361,15 @@ local function adminCreateAccount()
     clearScreen()
     drawAdminHeader("◆ CREATE ADMIN ACCOUNT ◆", "Add new administrator")
     
-    drawBox(15, 8, 50, 10, 0x1F2937)
+    local boxWidth = 50
+    local boxHeight = 10
+    local boxX = math.floor((w - boxWidth) / 2)
+    local boxY = 9
+    
+    drawBox(boxX, boxY, boxWidth, boxHeight, 0x1F2937)
     
     gpu.setForeground(colors.text)
-    local username = adminInput("Username: ", 10, false, 20)
+    local username = adminInput("Username: ", boxY + 2, false, 20)
     
     if not username or username == "" then
         showMessage("✗ Username required", "error", 2)
@@ -1257,7 +1381,7 @@ local function adminCreateAccount()
         return
     end
     
-    local password = adminInput("Password: ", 12, true, 30)
+    local password = adminInput("Password: ", boxY + 4, true, 30)
     
     if not password or password == "" then
         showMessage("✗ Password required", "error", 2)
@@ -1265,7 +1389,9 @@ local function adminCreateAccount()
     end
     
     gpu.setForeground(colors.textDim)
-    gpu.set(17, 14, "Creating account...")
+    local createText = "Creating account..."
+    local createX = boxX + math.floor((boxWidth - unicode.len(createText)) / 2)
+    gpu.set(createX, boxY + 6, createText)
     os.sleep(0.3)
     
     local ok, msg = createAdminAccount(username, password)
@@ -1281,13 +1407,20 @@ local function adminDeleteAccount()
     clearScreen()
     drawAdminHeader("◆ DELETE ADMIN ACCOUNT ◆", "Remove administrator")
     
-    drawBox(15, 8, 50, 10, 0x1F2937)
+    local boxWidth = 50
+    local boxHeight = 10
+    local boxX = math.floor((w - boxWidth) / 2)
+    local boxY = 9
+    
+    drawBox(boxX, boxY, boxWidth, boxHeight, 0x1F2937)
     
     gpu.setForeground(colors.warning)
-    gpu.set(17, 9, "⚠ WARNING: This cannot be undone!")
+    local warnText = "⚠ WARNING: This cannot be undone!"
+    local warnX = boxX + math.floor((boxWidth - unicode.len(warnText)) / 2)
+    gpu.set(warnX, boxY + 1, warnText)
     
     gpu.setForeground(colors.text)
-    local username = adminInput("Username: ", 12, false, 20)
+    local username = adminInput("Username: ", boxY + 4, false, 20)
     
     if not username or username == "" then
         showMessage("Cancelled", "warning", 1)
