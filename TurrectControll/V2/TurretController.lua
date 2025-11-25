@@ -322,7 +322,8 @@ local function sendHeartbeat()
                 type = "controller_heartbeat",
                 controller_name = CONTROLLER_NAME,
                 world_name = WORLD_NAME,
-                turret_count = #turretProxies
+                turret_count = #turretProxies,
+                request_sync = true  -- Request sync with every heartbeat
             }
             
             if sendToRelay(heartbeat) then
