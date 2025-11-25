@@ -357,41 +357,80 @@ local function handleMessage(eventType, _, sender, port, distance, message)
     if data.type == "sync_trusted" then
         addToLog("Received sync from server", "SYNC")
         
-        -- Clear all turrets first to start fresh
-        for _, turret in ipairs(turretProxies) do
-            pcall(function()
-                local currentPlayers = turret.getTrustedPlayers()
-                for _, player in ipairs(currentPlayers) do
-                    pcall(turret.removeTrustedPlayer, player)
-                end
-            end)
-        end
+        -- Check if lists actually changed
+        local globalChanged = false
+        local localChanged = false
         
-        -- Sync global list
+        -- Compare global list
         if data.players then
-            trustedPlayers = {}
-            for _, player in ipairs(data.players) do
-                table.insert(trustedPlayers, player)
+            if #trustedPlayers ~= #data.players then
+                globalChanged = true
+            else
+                for _, player in ipairs(data.players) do
+                    if not contains(trustedPlayers, player) then
+                        globalChanged = true
+                        break
+                    end
+                end
             end
-            addToLog("Synced " .. #trustedPlayers .. " global players", "SUCCESS")
         end
         
-        -- Sync local list
+        -- Compare local list
         if data.controller_players then
-            localTrustedPlayers = {}
-            for _, player in ipairs(data.controller_players) do
-                table.insert(localTrustedPlayers, player)
+            if #localTrustedPlayers ~= #data.controller_players then
+                localChanged = true
+            else
+                for _, player in ipairs(data.controller_players) do
+                    if not contains(localTrustedPlayers, player) then
+                        localChanged = true
+                        break
+                    end
+                end
             end
-            addToLog("Synced " .. #localTrustedPlayers .. " local players", "SUCCESS")
         end
         
-        -- Now add all players to all turrets
-        for _, player in ipairs(trustedPlayers) do
-            addTrustedPlayerAll(player)
-        end
-        
-        for _, player in ipairs(localTrustedPlayers) do
-            addTrustedPlayerAll(player)
+        -- Only update turrets if something changed
+        if globalChanged or localChanged then
+            addToLog("Lists changed - updating turrets", "SYNC")
+            
+            -- Clear all turrets first to start fresh
+            for _, turret in ipairs(turretProxies) do
+                pcall(function()
+                    local currentPlayers = turret.getTrustedPlayers()
+                    for _, player in ipairs(currentPlayers) do
+                        pcall(turret.removeTrustedPlayer, player)
+                    end
+                end)
+            end
+            
+            -- Update global list
+            if data.players then
+                trustedPlayers = {}
+                for _, player in ipairs(data.players) do
+                    table.insert(trustedPlayers, player)
+                end
+                addToLog("Synced " .. #trustedPlayers .. " global players", "SUCCESS")
+            end
+            
+            -- Update local list
+            if data.controller_players then
+                localTrustedPlayers = {}
+                for _, player in ipairs(data.controller_players) do
+                    table.insert(localTrustedPlayers, player)
+                end
+                addToLog("Synced " .. #localTrustedPlayers .. " local players", "SUCCESS")
+            end
+            
+            -- Re-add all players to all turrets
+            for _, player in ipairs(trustedPlayers) do
+                addTrustedPlayerAll(player)
+            end
+            
+            for _, player in ipairs(localTrustedPlayers) do
+                addTrustedPlayerAll(player)
+            end
+        else
+            addToLog("Lists unchanged - skipping turret update", "SYNC")
         end
         
         stats.syncCount = stats.syncCount + 1
