@@ -439,13 +439,14 @@ local function drawServerUI()
     gpu.setBackground(0x2D2D2D)
     gpu.setForeground(colors.warning)
     gpu.fill(1, 7, w, 1, " ")
-    gpu.set(2, 7, "Turret Controllers (via Linked Cards):")
+    gpu.set(2, 7, "TURRET CONTROLLERS:")
     
-    gpu.setForeground(colors.text)
+    gpu.setBackground(0x1E1E1E)
+    gpu.setForeground(colors.textDim)
     gpu.set(2, 8, "World/Dimension")
-    gpu.set(30, 8, "Controller")
-    gpu.set(52, 8, "Turrets")
-    gpu.set(62, 8, "HB")
+    gpu.set(28, 8, "Controller")
+    gpu.set(48, 8, "Turrets")
+    gpu.set(58, 8, "HB")
     gpu.set(68, 8, "Status")
     
     local y = 9
@@ -461,39 +462,51 @@ local function drawServerUI()
         local timeDiff = now - ctrl.lastHeartbeat
         local isActive = timeDiff < 90
         
-        gpu.setForeground(isActive and colors.accent or 0x888888)
+        gpu.setBackground(i % 2 == 0 and 0x1E1E1E or 0x252525)
+        gpu.fill(1, y, w, 1, " ")
+        
+        gpu.setForeground(isActive and colors.accent or colors.textDim)
         local world = ctrl.world or "Unknown"
-        if #world > 25 then world = world:sub(1, 22) .. "..." end
+        if #world > 23 then world = world:sub(1, 20) .. "..." end
         gpu.set(2, y, world)
         
-        gpu.setForeground(isActive and colors.text or 0x888888)
+        gpu.setForeground(isActive and colors.text or colors.textDim)
         local name = ctrl.name or "Unknown"
-        if #name > 18 then name = name:sub(1, 15) .. "..." end
-        gpu.set(30, y, name)
+        if #name > 17 then name = name:sub(1, 14) .. "..." end
+        gpu.set(28, y, name)
         
-        gpu.setForeground(isActive and colors.success or 0x888888)
-        gpu.set(52, y, tostring(ctrl.turretCount or 0))
+        gpu.setForeground(isActive and colors.success or colors.textDim)
+        gpu.set(48, y, string.format("%2d", ctrl.turretCount or 0))
         
-        local hbTime = math.floor(timeDiff)
-        gpu.setForeground(isActive and colors.textDim or 0x888888)
-        gpu.set(62, y, hbTime .. "s")
+        gpu.setForeground(isActive and colors.textDim or 0x666666)
+        gpu.set(58, y, string.format("%4ds", math.floor(timeDiff)))
         
         gpu.setForeground(isActive and colors.success or colors.error)
-        gpu.set(68, y, isActive and "ONLINE" or "OFFLINE")
+        gpu.set(68, y, isActive and "ONLINE " or "OFFLINE")
         y = y + 1
     end
     
     if #controllerList == 0 then
+        gpu.setBackground(0x1E1E1E)
+        gpu.fill(1, y, w, 1, " ")
         gpu.setForeground(colors.textDim)
-        gpu.set(2, y, "  (no controllers connected)")
+        gpu.set(4, y, "(no controllers connected)")
+        y = y + 1
     end
     
     -- Show relays
-    y = math.max(y + 1, 15)
     gpu.setBackground(0x2D2D2D)
     gpu.setForeground(colors.warning)
     gpu.fill(1, y, w, 1, " ")
-    gpu.set(2, y, "Connected Relays:")
+    gpu.set(2, y, "CONNECTED RELAYS:")
+    y = y + 1
+    
+    gpu.setBackground(0x1E1E1E)
+    gpu.setForeground(colors.textDim)
+    gpu.set(2, y, "Relay Name")
+    gpu.set(38, y, "Controllers")
+    gpu.set(54, y, "Managers")
+    gpu.set(68, y, "Status")
     y = y + 1
     
     local relayList = {}
@@ -507,77 +520,114 @@ local function drawServerUI()
         local now = computer.uptime()
         local isActive = (now - relay.lastSeen) < 90
         
-        gpu.setForeground(isActive and colors.success or 0x888888)
-        local name = relay.name or "Unknown"
-        if #name > 30 then name = name:sub(1, 27) .. "..." end
-        gpu.set(4, y, "• " .. name)
+        gpu.setBackground(i % 2 == 0 and 0x1E1E1E or 0x252525)
+        gpu.fill(1, y, w, 1, " ")
         
-        gpu.setForeground(isActive and colors.textDim or 0x888888)
-        local info = "Ctrl:" .. (relay.controllers or 0) .. " Mgr:" .. (relay.managers or 0)
-        gpu.set(40, y, info)
+        gpu.setForeground(isActive and colors.accent or colors.textDim)
+        local name = relay.name or "Unknown"
+        if #name > 33 then name = name:sub(1, 30) .. "..." end
+        gpu.set(2, y, "• " .. name)
+        
+        gpu.setForeground(isActive and colors.text or colors.textDim)
+        gpu.set(38, y, string.format("%3d", relay.controllers or 0))
+        gpu.set(54, y, string.format("%3d", relay.managers or 0))
         
         gpu.setForeground(isActive and colors.success or colors.error)
-        gpu.set(68, y, isActive and "ACTIVE" or "TIMEOUT")
+        gpu.set(68, y, isActive and "ACTIVE " or "TIMEOUT")
+        y = y + 1
+    end
+    
+    if #relayList == 0 then
+        gpu.setBackground(0x1E1E1E)
+        gpu.fill(1, y, w, 1, " ")
+        gpu.setForeground(colors.textDim)
+        gpu.set(4, y, "(no relays connected)")
         y = y + 1
     end
     
     -- Trusted players list
-    y = math.max(y + 1, 19)
+    gpu.setBackground(0x2D2D2D)
     gpu.setForeground(colors.warning)
     gpu.fill(1, y, w, 1, " ")
-    gpu.set(2, y, "Trusted Players (Global - All Dimensions):")
+    gpu.set(2, y, "GLOBAL TRUSTED PLAYERS:")
     y = y + 1
     
-    gpu.setBackground(0x2D2D2D)
-    gpu.setForeground(colors.text)
+    gpu.setBackground(0x1E1E1E)
+    gpu.setForeground(colors.textDim)
+    gpu.set(2, y, "Player Name")
+    gpu.set(68, y, "Scope")
+    y = y + 1
     
     local maxPlayers = math.min(3, #trustedPlayers)
     for i = 1, maxPlayers do
         local player = trustedPlayers[i]
-        gpu.set(4, y, "• " .. player)
+        gpu.setBackground(i % 2 == 0 and 0x1E1E1E or 0x252525)
+        gpu.fill(1, y, w, 1, " ")
+        
+        gpu.setForeground(colors.text)
+        gpu.set(2, y, "• " .. player)
+        
+        gpu.setForeground(colors.success)
+        gpu.set(68, y, "Global ")
         y = y + 1
     end
     
     if #trustedPlayers == 0 then
+        gpu.setBackground(0x1E1E1E)
+        gpu.fill(1, y, w, 1, " ")
         gpu.setForeground(colors.textDim)
         gpu.set(4, y, "(no trusted players)")
         y = y + 1
     elseif #trustedPlayers > 3 then
+        gpu.setBackground(0x1E1E1E)
+        gpu.fill(1, y, w, 1, " ")
         gpu.setForeground(colors.textDim)
         gpu.set(4, y, "... and " .. (#trustedPlayers - 3) .. " more")
         y = y + 1
     end
     
-    -- Recent activity
-    gpu.setBackground(0x1E1E1E)
-    gpu.setForeground(colors.warning)
-    gpu.fill(1, 23, w, 1, " ")
-    gpu.set(2, 23, "Recent Activity:")
-    
+    -- Recent activity - ensure it starts at proper position
+    y = 23
     gpu.setBackground(0x2D2D2D)
+    gpu.setForeground(colors.warning)
+    gpu.fill(1, y, w, 1, " ")
+    gpu.set(2, y, "RECENT ACTIVITY:")
+    
     y = 24
-    for i = 1, math.min(1, #activityLog) do
-        local entry = activityLog[i]
-        local color = 0xAAAAAA
+    gpu.setBackground(0x1E1E1E)
+    gpu.fill(1, y, w, 1, " ")
+    
+    if #activityLog > 0 then
+        local entry = activityLog[1]
+        local color = colors.textDim
         if entry.category == "SUCCESS" then color = colors.success
         elseif entry.category == "ERROR" then color = colors.error
         elseif entry.category == "RELAY" then color = 0xFF00FF
         elseif entry.category == "CONTROLLER" then color = colors.accent
         elseif entry.category == "TURRET" then color = colors.warning
+        elseif entry.category == "ADMIN" then color = colors.warning
+        elseif entry.category == "SECURITY" then color = colors.error
         end
         
+        gpu.setForeground(colors.textDim)
+        gpu.set(2, y, "[" .. entry.time .. "]")
+        
         gpu.setForeground(color)
-        local msg = "[" .. entry.time .. "] " .. entry.message
-        gpu.set(2, y, msg:sub(1, 76))
-        y = y + 1
+        local msg = entry.message
+        if #msg > 64 then msg = msg:sub(1, 61) .. "..." end
+        gpu.set(14, y, msg)
+    else
+        gpu.setForeground(colors.textDim)
+        gpu.set(2, y, "(no recent activity)")
     end
     
     -- Footer
     gpu.setBackground(colors.header)
     gpu.setForeground(colors.text)
     gpu.fill(1, 25, w, 1, " ")
-    local footer = "Central Server • " .. stats.totalTurrets .. " turrets • " .. stats.totalControllers .. " dimensions • Press F5 for Admin"
-    gpu.set(2, 25, footer)
+    local footer = string.format("Central Server • %d turrets • %d controllers • %d relays • Press F5 for Admin", 
+        stats.totalTurrets, stats.totalControllers, stats.relayCount)
+    gpu.set(2, 25, footer:sub(1, 78))
 end
 
 -- Network message handler
