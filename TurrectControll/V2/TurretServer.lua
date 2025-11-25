@@ -115,7 +115,6 @@ local function encryptMessage(plaintext)
     if success then
         return result
     else
-        -- Encryption failed, return nil
         return nil
     end
 end
@@ -148,6 +147,23 @@ end
 
 local function generateSessionToken()
     return data.encode64(data.random(32))
+end
+
+-- Activity logging (forward declaration)
+local function log(message, category)
+    category = category or "INFO"
+    local entry = {
+        time = os.date("%H:%M:%S"),
+        category = category,
+        message = message
+    }
+    
+    table.insert(activityLog, 1, entry)
+    if #activityLog > 50 then
+        table.remove(activityLog)
+    end
+    
+    stats.commandsProcessed = stats.commandsProcessed + 1
 end
 
 -- Admin account management
@@ -221,7 +237,6 @@ local function createAdminAccount(username, password)
     
     local saveOk = saveAdminAccounts()
     if not saveOk then
-        -- Remove the account if save failed
         adminAccounts[username] = nil
         return false, "Failed to save account"
     end
@@ -262,7 +277,6 @@ local function createSession(username)
         lastActivity = computer.uptime()
     }
     
-    -- Update last login
     if adminAccounts[username] then
         adminAccounts[username].lastLogin = computer.uptime()
         saveAdminAccounts()
@@ -277,7 +291,6 @@ local function validateSession(token)
         return false, nil
     end
     
-    -- Session timeout: 30 minutes (1800 seconds)
     if (computer.uptime() - session.lastActivity) > 1800 then
         activeSessions[token] = nil
         return false, nil
@@ -312,9 +325,9 @@ local function loadTrustedPlayers()
         local content = file:read("*a")
         file:close()
         
-        local ok, data = pcall(serialization.unserialize, content)
-        if ok and type(data) == "table" then
-            trustedPlayers = data
+        local ok, loadedData = pcall(serialization.unserialize, content)
+        if ok and type(loadedData) == "table" then
+            trustedPlayers = loadedData
             stats.totalTrusted = #trustedPlayers
             return true
         end
@@ -322,27 +335,10 @@ local function loadTrustedPlayers()
     return false
 end
 
--- Activity logging
-local function log(message, category)
-    category = category or "INFO"
-    local entry = {
-        time = os.date("%H:%M:%S"),
-        category = category,
-        message = message
-    }
-    
-    table.insert(activityLog, 1, entry)
-    if #activityLog > 50 then
-        table.remove(activityLog)
-    end
-    
-    stats.commandsProcessed = stats.commandsProcessed + 1
-end
-
 -- Controller management
 local function registerController(address, controllerName, worldName, turretCount)
     if not turretControllers[address] then
-        local controllerId = address  -- Use address as unique ID
+        local controllerId = address
         
         turretControllers[address] = {
             address = address,
@@ -354,7 +350,6 @@ local function registerController(address, controllerName, worldName, turretCoun
             lastHeartbeat = computer.uptime()
         }
         
-        -- Initialize empty per-controller list if not exists
         if not controllerTrustedPlayers[controllerId] then
             controllerTrustedPlayers[controllerId] = {}
         end
@@ -366,7 +361,6 @@ local function registerController(address, controllerName, worldName, turretCoun
         turretControllers[address].turretCount = turretCount or turretControllers[address].turretCount
     end
     
-    -- Recalculate total turrets
     stats.totalTurrets = 0
     for _, ctrl in pairs(turretControllers) do
         stats.totalTurrets = stats.totalTurrets + ctrl.turretCount
@@ -396,11 +390,9 @@ local function broadcastToControllers(command, relayAddress)
     local encrypted = encryptMessage(msg)
     
     if relayAddress then
-        -- Send to specific relay
         modem.send(relayAddress, PORT, encrypted or msg)
         return true
     else
-        -- Broadcast to all relays
         modem.broadcast(PORT, encrypted or msg)
         return true
     end
@@ -458,7 +450,7 @@ local function drawServerUI()
         local ctrl = controllerList[i]
         local now = computer.uptime()
         local timeDiff = now - ctrl.lastHeartbeat
-        local isActive = timeDiff < 90  -- 90 seconds (3 missed heartbeats)
+        local isActive = timeDiff < 90
         
         gpu.setForeground(isActive and colors.accent or 0x888888)
         local world = ctrl.world or "Unknown"
@@ -473,7 +465,6 @@ local function drawServerUI()
         gpu.setForeground(isActive and colors.success or 0x888888)
         gpu.set(52, y, tostring(ctrl.turretCount or 0))
         
-        -- Show time since last heartbeat
         local hbTime = math.floor(timeDiff)
         gpu.setForeground(isActive and colors.textDim or 0x888888)
         gpu.set(62, y, hbTime .. "s")
@@ -576,7 +567,7 @@ local function drawServerUI()
     gpu.setBackground(colors.header)
     gpu.setForeground(colors.text)
     gpu.fill(1, 25, w, 1, " ")
-    local footer = "Central Server • " .. stats.totalTurrets .. " turrets • " .. stats.totalControllers .. " dimensions"
+    local footer = "Central Server • " .. stats.totalTurrets .. " turrets • " .. stats.totalControllers .. " dimensions • Press F5 for Admin"
     gpu.set(2, 25, footer)
 end
 
@@ -584,19 +575,18 @@ end
 local function handleMessage(eventType, _, sender, port, distance, message)
     if port ~= PORT then return end
     
-    -- Try to decrypt message first
     local decrypted = decryptMessage(message)
-    local messageToUse = decrypted or message -- Fallback to plain for backward compat
+    local messageToUse = decrypted or message
     
-    local success, data = pcall(serialization.unserialize, messageToUse)
-    if not success or not data then
+    local success, msgData = pcall(serialization.unserialize, messageToUse)
+    if not success or not msgData then
         log("Bad message from " .. sender:sub(1, 8), "ERROR")
         return
     end
     
-    -- Handle relay ping (no auth needed)
-    if data.type == "relay_ping" then
-        registerRelay(sender, data.relay_name or "Unknown")
+    -- Handle relay ping
+    if msgData.type == "relay_ping" then
+        registerRelay(sender, msgData.relay_name or "Unknown")
         
         local response = {
             type = "server_response",
@@ -611,21 +601,21 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         return
     end
     
-    -- Handle relay heartbeat (no auth needed)
-    if data.type == "relay_heartbeat" then
-        registerRelay(sender, data.relay_name or "Unknown")
+    -- Handle relay heartbeat
+    if msgData.type == "relay_heartbeat" then
+        registerRelay(sender, msgData.relay_name or "Unknown")
         if relays[sender] then
-            relays[sender].controllers = data.controllers or 0
-            relays[sender].managers = data.managers or 0
+            relays[sender].controllers = msgData.controllers or 0
+            relays[sender].managers = msgData.managers or 0
         end
         if not adminMode then drawServerUI() end
         return
     end
     
-    -- Handle turret controller registration (no auth needed)
-    if data.type == "controller_register" then
-        local controllerId = data.tunnelAddress or sender
-        registerController(controllerId, data.controllerName or data.controller_name, data.worldName or data.world_name, data.turret_count)
+    -- Handle controller registration
+    if msgData.type == "controller_register" then
+        local controllerId = msgData.tunnelAddress or sender
+        registerController(controllerId, msgData.controllerName or msgData.controller_name, msgData.worldName or msgData.world_name, msgData.turret_count)
         
         local response = {
             type = "sync_trusted",
@@ -637,24 +627,24 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         local encrypted = encryptMessage(responseMsg)
         modem.send(sender, PORT, encrypted or responseMsg)
         
-        log("Synced " .. #trustedPlayers .. " global + " .. #(controllerTrustedPlayers[controllerId] or {}) .. " local to " .. (data.controllerName or data.controller_name or "controller"), "CONTROLLER")
+        log("Synced " .. #trustedPlayers .. " global + " .. #(controllerTrustedPlayers[controllerId] or {}) .. " local to " .. (msgData.controllerName or msgData.controller_name or "controller"), "CONTROLLER")
         if not adminMode then drawServerUI() end
         return
     end
     
-    -- Handle turret controller heartbeat (no auth needed)
-    if data.type == "controller_heartbeat" then
-        local controllerId = data.tunnelAddress or sender
+    -- Handle controller heartbeat
+    if msgData.type == "controller_heartbeat" then
+        local controllerId = msgData.tunnelAddress or sender
         local ctrl = turretControllers[controllerId]
         
         if ctrl then
             ctrl.lastHeartbeat = computer.uptime()
             ctrl.lastSeen = computer.uptime()
-            ctrl.turretCount = data.turret_count or ctrl.turretCount
-            ctrl.name = data.controllerName or data.controller_name or ctrl.name
-            ctrl.world = data.worldName or data.world_name or ctrl.world
+            ctrl.turretCount = msgData.turret_count or ctrl.turretCount
+            ctrl.name = msgData.controllerName or msgData.controller_name or ctrl.name
+            ctrl.world = msgData.worldName or msgData.world_name or ctrl.world
         else
-            registerController(controllerId, data.controllerName or data.controller_name, data.worldName or data.world_name, data.turret_count)
+            registerController(controllerId, msgData.controllerName or msgData.controller_name, msgData.worldName or msgData.world_name, msgData.turret_count)
         end
         
         stats.totalTurrets = 0
@@ -666,12 +656,10 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         return
     end
     
-    -- ALL MANAGER COMMANDS BELOW REQUIRE AUTHENTICATION
-    
     -- Handle manager login
-    if data.command == "managerLogin" then
-        local username = data.username
-        local password = data.password
+    if msgData.command == "managerLogin" then
+        local username = msgData.username
+        local password = msgData.password
         
         local response = { status = "fail" }
         
@@ -693,7 +681,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
     end
     
     -- Verify session for all other manager commands
-    local sessionToken = data.sessionToken
+    local sessionToken = msgData.sessionToken
     local isValid, username = validateSession(sessionToken)
     
     if not isValid then
@@ -707,15 +695,13 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         return
     end
     
-    -- Log who performed the action
     local actionUser = " [by " .. username .. "]"
-    
     local response = { status = "fail" }
     
     -- Command: Add trusted player
-    if data.command == "addTrustedPlayer" and type(data.player) == "string" then
-        local player = data.player
-        local scope = data.scope or "global"
+    if msgData.command == "addTrustedPlayer" and type(msgData.player) == "string" then
+        local player = msgData.player
+        local scope = msgData.scope or "global"
         
         if scope == "global" then
             log("Add player (GLOBAL): " .. player .. actionUser, "TURRET")
@@ -739,9 +725,9 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                 response.message = "Player already trusted globally"
             end
             
-        elseif scope == "specific" and data.target_controller then
-            local targetId = data.target_controller
-            local targetWorld = data.target_world or "Unknown"
+        elseif scope == "specific" and msgData.target_controller then
+            local targetId = msgData.target_controller
+            local targetWorld = msgData.target_world or "Unknown"
             
             log("Add player (SPECIFIC): " .. player .. " to " .. targetWorld .. actionUser, "TURRET")
             
@@ -774,9 +760,9 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         end
         
     -- Command: Remove trusted player
-    elseif data.command == "removeTrustedPlayer" and type(data.player) == "string" then
-        local player = data.player
-        local scope = data.scope or "global"
+    elseif msgData.command == "removeTrustedPlayer" and type(msgData.player) == "string" then
+        local player = msgData.player
+        local scope = msgData.scope or "global"
         
         if scope == "global" then
             log("Remove player (GLOBAL): " .. player .. actionUser, "TURRET")
@@ -800,9 +786,9 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                 response.message = "Player not in global list"
             end
             
-        elseif scope == "specific" and data.target_controller then
-            local targetId = data.target_controller
-            local targetWorld = data.target_world or "Unknown"
+        elseif scope == "specific" and msgData.target_controller then
+            local targetId = msgData.target_controller
+            local targetWorld = msgData.target_world or "Unknown"
             
             log("Remove player (SPECIFIC): " .. player .. " from " .. targetWorld .. actionUser, "TURRET")
             
@@ -831,13 +817,13 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         end
         
     -- Command: Get trusted players
-    elseif data.command == "getTrustedPlayers" then
+    elseif msgData.command == "getTrustedPlayers" then
         response.status = "success"
         response.players = trustedPlayers
         log("Sent player list to " .. username, "INFO")
         
     -- Command: Get controllers
-    elseif data.command == "getControllers" then
+    elseif msgData.command == "getControllers" then
         response.status = "success"
         response.controllers = {}
         
@@ -858,7 +844,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         log("Sent controller list to " .. username, "INFO")
         
     else
-        response.reason = "Unknown command: " .. tostring(data.command)
+        response.reason = "Unknown command: " .. tostring(msgData.command)
         log("Unknown command from " .. username, "ERROR")
     end
     
@@ -884,7 +870,7 @@ local function drawAdminHeader(title, subtitle)
     local titleX = math.floor((w - unicode.len(title)) / 2)
     gpu.set(titleX, 2, title)
     
-    if subtitle then
+    if subtitle and subtitle ~= "" then
         gpu.setForeground(colors.textDim)
         local subX = math.floor((w - unicode.len(subtitle)) / 2)
         gpu.set(subX, 3, subtitle)
@@ -893,82 +879,174 @@ local function drawAdminHeader(title, subtitle)
     gpu.setBackground(colors.bg)
 end
 
+local function drawBox(x, y, width, height, bgColor)
+    gpu.setBackground(bgColor or colors.bg)
+    gpu.fill(x, y, width, height, " ")
+end
+
 local function adminInput(prompt, y, hidden, maxLen)
     maxLen = maxLen or 30
     gpu.setForeground(colors.text)
     gpu.set(5, y, prompt)
     
-    local x = 5 + #prompt
+    local promptLen = unicode.len(prompt)
+    local x = 5 + promptLen
     
     gpu.setBackground(0x1F2937)
     gpu.fill(x, y, maxLen + 2, 1, " ")
     
     x = x + 1
-    gpu.set(x, y, "")
     
     local text = ""
+    local cursorVisible = true
+    local lastBlink = computer.uptime()
+    
     while true do
-        local _, _, char, code = event.pull("key_down")
-        
-        if code == 28 then -- Enter
-            break
-        elseif code == 14 and #text > 0 then -- Backspace
-            text = text:sub(1, -2)
+        if computer.uptime() - lastBlink > 0.5 then
+            cursorVisible = not cursorVisible
+            lastBlink = computer.uptime()
+            
             gpu.setBackground(0x1F2937)
-            gpu.fill(x, y, maxLen, 1, " ")
             if hidden then
-                gpu.set(x, y, string.rep("•", #text))
+                gpu.set(x, y, string.rep("•", #text) .. (cursorVisible and "_" or " "))
             else
-                gpu.set(x, y, text)
-            end
-        elseif char >= 32 and char < 127 and #text < maxLen then
-            text = text .. string.char(char)
-            if hidden then
-                gpu.set(x, y, string.rep("•", #text))
-            else
-                gpu.set(x, y, text)
+                gpu.set(x, y, text .. (cursorVisible and "_" or " "))
             end
         end
+        
+        local eventData = {event.pull(0.1)}
+        if eventData[1] == "key_down" then
+            local _, _, char, code = table.unpack(eventData)
+            
+            if code == 28 then
+                break
+            elseif code == 14 and #text > 0 then
+                text = text:sub(1, -2)
+                gpu.setBackground(0x1F2937)
+                gpu.fill(x, y, maxLen, 1, " ")
+                if hidden then
+                    gpu.set(x, y, string.rep("•", #text) .. "_")
+                else
+                    gpu.set(x, y, text .. "_")
+                end
+                cursorVisible = true
+                lastBlink = computer.uptime()
+            elseif char and char >= 32 and char < 127 and #text < maxLen then
+                text = text .. string.char(char)
+                gpu.setBackground(0x1F2937)
+                if hidden then
+                    gpu.set(x, y, string.rep("•", #text) .. "_")
+                else
+                    gpu.set(x, y, text .. "_")
+                end
+                cursorVisible = true
+                lastBlink = computer.uptime()
+            end
+        end
+    end
+    
+    gpu.setBackground(0x1F2937)
+    if hidden then
+        gpu.set(x, y, string.rep("•", #text) .. " ")
+    else
+        gpu.set(x, y, text .. " ")
     end
     
     gpu.setBackground(colors.bg)
     return text
 end
 
+local function showMessage(message, msgType, duration)
+    duration = duration or 2
+    
+    local color = colors.text
+    if msgType == "success" then
+        color = colors.success
+    elseif msgType == "error" then
+        color = colors.error
+    elseif msgType == "warning" then
+        color = colors.warning
+    end
+    
+    clearScreen()
+    drawAdminHeader("◆ ADMIN PANEL ◆", "")
+    
+    drawBox(15, 10, 50, 5, 0x1F2937)
+    gpu.setForeground(color)
+    local msgX = math.floor((w - unicode.len(message)) / 2)
+    gpu.set(msgX, 12, message)
+    
+    os.sleep(duration)
+end
+
+local function confirmAction(message)
+    clearScreen()
+    drawAdminHeader("◆ CONFIRM ACTION ◆", "")
+    
+    drawBox(10, 10, 60, 6, 0x1F2937)
+    
+    gpu.setForeground(colors.warning)
+    local msgX = math.floor((w - unicode.len(message)) / 2)
+    gpu.set(msgX, 12, message)
+    
+    gpu.setForeground(colors.text)
+    local promptX = math.floor((w - 17) / 2)
+    gpu.set(promptX, 14, "[Y] Yes    [N] No")
+    
+    while true do
+        local _, _, char, code = event.pull("key_down")
+        
+        if char == string.byte('y') or char == string.byte('Y') then
+            return true
+        elseif char == string.byte('n') or char == string.byte('N') or code == 1 then
+            return false
+        end
+    end
+end
+
 local function adminLogin()
     clearScreen()
     drawAdminHeader("◆ ADMIN AUTHENTICATION ◆", "Server Administration Access")
     
+    drawBox(15, 6, 50, 12, 0x1F2937)
+    
     gpu.setForeground(colors.warning)
-    gpu.set(5, 6, "⚠ RESTRICTED ACCESS - AUTHORIZED PERSONNEL ONLY")
+    gpu.set(17, 8, "⚠ RESTRICTED ACCESS")
+    gpu.setForeground(colors.textDim)
+    gpu.set(17, 9, "Authorized personnel only")
     
     gpu.setForeground(colors.text)
-    local username = adminInput("Username: ", 10, false, 20)
-    local password = adminInput("Password: ", 12, true, 30)
+    local username = adminInput("Username: ", 12, false, 20)
+    
+    if not username or username == "" then
+        return false, nil
+    end
+    
+    local password = adminInput("Password: ", 14, true, 30)
+    
+    if not password or password == "" then
+        return false, nil
+    end
     
     gpu.setForeground(colors.textDim)
-    gpu.set(5, 15, "Authenticating...")
+    gpu.set(17, 16, "Authenticating...")
+    os.sleep(0.5)
     
     if verifyAdminCredentials(username, password) then
         adminAuthenticated = true
         adminMode = true
         
-        -- Update last login
         if adminAccounts[username] then
-            adminAccounts[username].lastLogin = os.time()
+            adminAccounts[username].lastLogin = computer.uptime()
             saveAdminAccounts()
         end
         
-        gpu.setForeground(colors.success)
-        gpu.set(5, 15, "✓ Authentication successful")
         log("Admin panel accessed by: " .. username, "ADMIN")
-        os.sleep(1)
+        showMessage("✓ Authentication successful", "success", 1)
         return true, username
     else
-        gpu.setForeground(colors.error)
-        gpu.set(5, 15, "✗ Authentication failed")
         log("Failed admin panel login: " .. username, "SECURITY")
-        os.sleep(2)
+        showMessage("✗ Authentication failed", "error", 2)
         return false, nil
     end
 end
@@ -977,62 +1055,100 @@ local function adminMainMenu()
     clearScreen()
     drawAdminHeader("◆ ADMIN PANEL ◆", "Server Management Console")
     
+    drawBox(20, 6, 40, 14, 0x1F2937)
+    
+    gpu.setForeground(colors.accent)
+    gpu.set(22, 7, "═══════════════════════════════════════")
+    
     gpu.setForeground(colors.text)
-    gpu.set(5, 6, "1  View All Admin Accounts")
-    gpu.set(5, 7, "2  Create Admin Account")
-    gpu.set(5, 8, "3  Delete Admin Account")
-    gpu.set(5, 9, "4  View Activity Log")
-    gpu.set(5, 10, "5  View Active Sessions")
-    gpu.set(5, 11, "6  Exit Admin Mode")
+    local menuY = 9
+    gpu.set(24, menuY, "[1] View All Admin Accounts")
+    gpu.set(24, menuY + 1, "[2] Create Admin Account")
+    gpu.set(24, menuY + 2, "[3] Delete Admin Account")
+    gpu.set(24, menuY + 3, "[4] View Activity Log")
+    gpu.set(24, menuY + 4, "[5] View Active Sessions")
+    gpu.set(24, menuY + 5, "[6] Exit Admin Mode")
+    
+    gpu.setForeground(colors.accent)
+    gpu.set(22, menuY + 7, "═══════════════════════════════════════")
     
     gpu.setForeground(colors.textDim)
-    gpu.set(5, 14, "Total Admins: " .. (function() local c=0; for _ in pairs(adminAccounts) do c=c+1 end return c end)())
-    gpu.set(5, 15, "Active Sessions: " .. (function() local c=0; for _ in pairs(activeSessions) do c=c+1 end return c end)())
+    local adminCount = 0
+    for _ in pairs(adminAccounts) do adminCount = adminCount + 1 end
+    local sessionCount = 0
+    for _ in pairs(activeSessions) do sessionCount = sessionCount + 1 end
+    
+    gpu.set(24, menuY + 8, "Admins: " .. adminCount .. " • Sessions: " .. sessionCount)
     
     gpu.setForeground(colors.error)
-    gpu.set(5, h, "Press F5 to exit admin mode")
+    gpu.set(22, h - 1, "Press F5 to exit admin mode")
     
-    local _, _, char = event.pull("key_down")
-    return char
+    while true do
+        local _, _, char, code = event.pull("key_down")
+        
+        if code == 63 then
+            return nil
+        elseif char and char >= string.byte('1') and char <= string.byte('6') then
+            return char
+        end
+    end
 end
 
 local function adminViewAccounts()
     clearScreen()
     drawAdminHeader("◆ ADMIN ACCOUNTS ◆", "Registered administrators")
     
-    gpu.setForeground(colors.textDim)
-    gpu.set(5, 6, "Username")
-    gpu.set(25, 6, "Last Login")
-    gpu.set(50, 6, "Permissions")
+    drawBox(5, 6, 70, h - 8, 0x1F2937)
     
-    local y = 8
+    gpu.setForeground(colors.accent)
+    gpu.set(7, 7, "Username")
+    gpu.set(27, 7, "Last Login")
+    gpu.set(50, 7, "Permissions")
+    gpu.set(7, 8, "─────────────────────────────────────────────────────────────────")
+    
+    local y = 9
+    local accountList = {}
     for username, account in pairs(adminAccounts) do
+        table.insert(accountList, {username = username, account = account})
+    end
+    table.sort(accountList, function(a, b) return a.username < b.username end)
+    
+    for i, entry in ipairs(accountList) do
+        if y >= h - 3 then break end
+        
+        local username = entry.username
+        local account = entry.account
+        
         gpu.setForeground(colors.text)
-        gpu.set(5, y, username)
+        gpu.set(7, y, username)
         
         gpu.setForeground(colors.textDim)
         if account.lastLogin and account.lastLogin > 0 then
             local timeSince = math.floor(computer.uptime() - account.lastLogin)
             if timeSince < 60 then
-                gpu.set(25, y, timeSince .. "s ago")
+                gpu.set(27, y, timeSince .. "s ago")
             elseif timeSince < 3600 then
-                gpu.set(25, y, math.floor(timeSince / 60) .. "m ago")
+                gpu.set(27, y, math.floor(timeSince / 60) .. "m ago")
             else
-                gpu.set(25, y, math.floor(timeSince / 3600) .. "h ago")
+                gpu.set(27, y, math.floor(timeSince / 3600) .. "h ago")
             end
         else
-            gpu.set(25, y, "Never")
+            gpu.set(27, y, "Never")
         end
         
         gpu.setForeground(colors.success)
         gpu.set(50, y, account.permissions or "full")
         
         y = y + 1
-        if y >= h - 2 then break end
+    end
+    
+    if #accountList == 0 then
+        gpu.setForeground(colors.textDim)
+        gpu.set(7, 9, "No admin accounts")
     end
     
     gpu.setForeground(colors.textDim)
-    gpu.set(5, h, "Press any key to return...")
+    gpu.set(7, h - 1, "Press any key to return...")
     event.pull("key_down")
 end
 
@@ -1040,92 +1156,97 @@ local function adminCreateAccount()
     clearScreen()
     drawAdminHeader("◆ CREATE ADMIN ACCOUNT ◆", "Add new administrator")
     
+    drawBox(15, 8, 50, 10, 0x1F2937)
+    
     gpu.setForeground(colors.text)
-    local username = adminInput("Username: ", 8, false, 20)
+    local username = adminInput("Username: ", 10, false, 20)
     
     if not username or username == "" then
-        gpu.setForeground(colors.error)
-        gpu.set(5, 12, "✗ Username required")
-        os.sleep(2)
+        showMessage("✗ Username required", "error", 2)
         return
     end
     
-    local password = adminInput("Password: ", 10, true, 30)
+    if adminAccounts[username] then
+        showMessage("✗ Account already exists", "error", 2)
+        return
+    end
+    
+    local password = adminInput("Password: ", 12, true, 30)
     
     if not password or password == "" then
-        gpu.setForeground(colors.error)
-        gpu.set(5, 12, "✗ Password required")
-        os.sleep(2)
+        showMessage("✗ Password required", "error", 2)
         return
     end
     
     gpu.setForeground(colors.textDim)
-    gpu.set(5, 13, "Creating account...")
-    gpu.set(5, 14, "Hashing password...")
+    gpu.set(17, 14, "Creating account...")
+    os.sleep(0.3)
     
     local ok, msg = createAdminAccount(username, password)
     
-    -- Clear status lines
-    gpu.fill(5, 13, 70, 2, " ")
-    
     if ok then
-        gpu.setForeground(colors.success)
-        gpu.set(5, 13, "✓ Account created: " .. username)
+        showMessage("✓ Account created: " .. username, "success", 2)
     else
-        gpu.setForeground(colors.error)
-        gpu.set(5, 13, "✗ " .. (msg or "Failed to create account"))
+        showMessage("✗ " .. (msg or "Failed"), "error", 2)
     end
-    
-    os.sleep(2)
 end
 
 local function adminDeleteAccount()
     clearScreen()
     drawAdminHeader("◆ DELETE ADMIN ACCOUNT ◆", "Remove administrator")
     
+    drawBox(15, 8, 50, 10, 0x1F2937)
+    
     gpu.setForeground(colors.warning)
-    gpu.set(5, 6, "⚠ WARNING: This action cannot be undone!")
+    gpu.set(17, 9, "⚠ WARNING: This cannot be undone!")
     
     gpu.setForeground(colors.text)
-    local username = adminInput("Username: ", 9, false, 20)
+    local username = adminInput("Username: ", 12, false, 20)
     
     if not username or username == "" then
-        gpu.setForeground(colors.error)
-        gpu.set(5, 12, "Cancelled")
-        os.sleep(1)
+        showMessage("Cancelled", "warning", 1)
         return
     end
     
-    gpu.setForeground(colors.error)
-    gpu.set(5, 12, "Type 'DELETE' to confirm: ")
-    local confirm = adminInput("", 12, false, 10)
+    if not adminAccounts[username] then
+        showMessage("✗ Account not found", "error", 2)
+        return
+    end
     
-    if confirm ~= "DELETE" then
-        gpu.setForeground(colors.warning)
-        gpu.set(5, 14, "Cancelled")
-        os.sleep(1)
+    if username == "admin" then
+        showMessage("✗ Cannot delete default admin", "error", 2)
+        return
+    end
+    
+    if not confirmAction("Delete account '" .. username .. "'?") then
+        showMessage("Cancelled", "warning", 1)
         return
     end
     
     local ok, msg = deleteAdminAccount(username)
     
     if ok then
-        gpu.setForeground(colors.success)
-        gpu.set(5, 15, "✓ Account deleted: " .. username)
+        showMessage("✓ Account deleted", "success", 2)
     else
-        gpu.setForeground(colors.error)
-        gpu.set(5, 15, "✗ " .. msg)
+        showMessage("✗ " .. (msg or "Failed"), "error", 2)
     end
-    
-    os.sleep(2)
 end
 
 local function adminViewActivityLog()
     clearScreen()
     drawAdminHeader("◆ ACTIVITY LOG ◆", "Recent server actions")
     
-    local y = 6
-    for i = 1, math.min(15, #activityLog) do
+    drawBox(5, 6, 70, h - 8, 0x1F2937)
+    
+    gpu.setForeground(colors.accent)
+    gpu.set(7, 7, "Time")
+    gpu.set(20, 7, "Event")
+    gpu.set(7, 8, "─────────────────────────────────────────────────────────────────")
+    
+    local y = 9
+    for i = 1, math.min(h - 11, #activityLog) do
+        if y >= h - 3 then break end
+        
         local entry = activityLog[i]
         local color = colors.textDim
         if entry.category == "SUCCESS" then color = colors.success
@@ -1134,14 +1255,24 @@ local function adminViewActivityLog()
         elseif entry.category == "SECURITY" then color = colors.error
         end
         
+        gpu.setForeground(colors.textDim)
+        gpu.set(7, y, entry.time)
+        
         gpu.setForeground(color)
-        local msg = "[" .. entry.time .. "] " .. entry.message
-        gpu.set(5, y, msg:sub(1, 70))
+        local msg = entry.message
+        if #msg > 50 then msg = msg:sub(1, 47) .. "..." end
+        gpu.set(20, y, msg)
+        
         y = y + 1
     end
     
+    if #activityLog == 0 then
+        gpu.setForeground(colors.textDim)
+        gpu.set(7, 9, "No activity logged")
+    end
+    
     gpu.setForeground(colors.textDim)
-    gpu.set(5, h, "Press any key to return...")
+    gpu.set(7, h - 1, "Press any key to return...")
     event.pull("key_down")
 end
 
@@ -1149,29 +1280,43 @@ local function adminViewSessions()
     clearScreen()
     drawAdminHeader("◆ ACTIVE SESSIONS ◆", "Currently logged-in managers")
     
-    gpu.setForeground(colors.textDim)
-    gpu.set(5, 6, "Username")
-    gpu.set(25, 6, "Login Time")
-    gpu.set(50, 6, "Last Activity")
+    drawBox(5, 6, 70, h - 8, 0x1F2937)
     
-    local y = 8
+    gpu.setForeground(colors.accent)
+    gpu.set(7, 7, "Username")
+    gpu.set(27, 7, "Login Time")
+    gpu.set(50, 7, "Last Activity")
+    gpu.set(7, 8, "─────────────────────────────────────────────────────────────────")
+    
+    local y = 9
     local sessionCount = 0
     local currentUptime = computer.uptime()
     
+    local sessionList = {}
     for token, session in pairs(activeSessions) do
+        table.insert(sessionList, {token = token, session = session})
+    end
+    table.sort(sessionList, function(a, b) 
+        return a.session.loginTime > b.session.loginTime 
+    end)
+    
+    for i, entry in ipairs(sessionList) do
+        if y >= h - 3 then break end
+        
         sessionCount = sessionCount + 1
+        local session = entry.session
         
         gpu.setForeground(colors.text)
-        gpu.set(5, y, session.username)
+        gpu.set(7, y, session.username)
         
         gpu.setForeground(colors.textDim)
         local loginDuration = math.floor(currentUptime - session.loginTime)
         if loginDuration < 60 then
-            gpu.set(25, y, loginDuration .. "s ago")
+            gpu.set(27, y, loginDuration .. "s ago")
         elseif loginDuration < 3600 then
-            gpu.set(25, y, math.floor(loginDuration / 60) .. "m ago")
+            gpu.set(27, y, math.floor(loginDuration / 60) .. "m ago")
         else
-            gpu.set(25, y, math.floor(loginDuration / 3600) .. "h ago")
+            gpu.set(27, y, math.floor(loginDuration / 3600) .. "h ago")
         end
         
         local timeSince = math.floor(currentUptime - session.lastActivity)
@@ -1185,30 +1330,27 @@ local function adminViewSessions()
         end
         
         y = y + 1
-        if y >= h - 2 then break end
     end
     
     if sessionCount == 0 then
         gpu.setForeground(colors.textDim)
-        gpu.set(5, 8, "No active sessions")
+        gpu.set(7, 9, "No active sessions")
     end
     
     gpu.setForeground(colors.textDim)
-    gpu.set(5, h, "Press any key to return...")
+    gpu.set(7, h - 1, "Press any key to return...")
     event.pull("key_down")
 end
 
 -- Key press handler for admin mode
 local function handleKeyPress(eventType, _, _, code)
-    if code == 63 then -- F5 key - Toggle admin mode
+    if code == 63 then
         if adminMode then
-            -- Exit admin mode
             adminMode = false
             adminAuthenticated = false
             drawServerUI()
             log("Admin mode exited", "ADMIN")
             
-            -- Wait for key release
             while true do
                 local e = {event.pull(0.1)}
                 if e[1] == "key_up" and e[4] == 63 then
@@ -1216,7 +1358,6 @@ local function handleKeyPress(eventType, _, _, code)
                 end
             end
         else
-            -- Wait for F5 key to be released
             while true do
                 local e = {event.pull(0.1)}
                 if e[1] == "key_up" and e[4] == 63 then
@@ -1224,14 +1365,17 @@ local function handleKeyPress(eventType, _, _, code)
                 end
             end
             
-            -- Enter admin mode
             local success, username = adminLogin()
             if success then
-                -- Admin panel loop
                 while adminMode do
                     local choice = adminMainMenu()
                     
-                    if choice == string.byte('1') then
+                    if choice == nil then
+                        adminMode = false
+                        adminAuthenticated = false
+                        log("Admin mode exited by: " .. username, "ADMIN")
+                        break
+                    elseif choice == string.byte('1') then
                         adminViewAccounts()
                     elseif choice == string.byte('2') then
                         adminCreateAccount()
@@ -1245,9 +1389,12 @@ local function handleKeyPress(eventType, _, _, code)
                         adminMode = false
                         adminAuthenticated = false
                         log("Admin mode exited by: " .. username, "ADMIN")
+                        break
                     end
                 end
                 
+                drawServerUI()
+            else
                 drawServerUI()
             end
         end
@@ -1261,7 +1408,6 @@ local function main()
     print("Data directory: " .. DATA_DIR)
     print("")
     
-    -- Load admin accounts
     print("Loading admin accounts...")
     if loadAdminAccounts() then
         local adminCount = 0
@@ -1275,7 +1421,6 @@ local function main()
     end
     print("")
     
-    -- Load trusted players
     if loadTrustedPlayers() then
         print("Loaded " .. #trustedPlayers .. " trusted players")
     else
@@ -1304,9 +1449,7 @@ local function main()
     
     log("Central server started with encryption", "SYSTEM")
     
-    -- Maintenance timer
     event.timer(60, function()
-        -- Cleanup old controllers
         local now = computer.uptime()
         for address, ctrl in pairs(turretControllers) do
             if now - ctrl.lastHeartbeat > 180 then
@@ -1316,7 +1459,6 @@ local function main()
             end
         end
         
-        -- Cleanup old relays
         for address, relay in pairs(relays) do
             if now - relay.lastSeen > 120 then
                 relays[address] = nil
@@ -1324,7 +1466,6 @@ local function main()
             end
         end
         
-        -- Cleanup expired sessions
         local currentUptime = computer.uptime()
         for token, session in pairs(activeSessions) do
             if (currentUptime - session.lastActivity) > 1800 then
@@ -1333,7 +1474,6 @@ local function main()
             end
         end
         
-        -- Recalculate total turrets
         stats.totalTurrets = 0
         for _, ctrl in pairs(turretControllers) do
             stats.totalTurrets = stats.totalTurrets + ctrl.turretCount
