@@ -1102,10 +1102,11 @@ local function adminMainMenu()
     gpu.set(24, menuY + 2, "[3] Delete Admin Account")
     gpu.set(24, menuY + 3, "[4] View Activity Log")
     gpu.set(24, menuY + 4, "[5] View Active Sessions")
-    gpu.set(24, menuY + 5, "[6] Exit Admin Mode")
+    gpu.set(24, menuY + 5, "[6] Manage Controllers")
+    gpu.set(24, menuY + 6, "[7] Exit Admin Mode")
     
     gpu.setForeground(colors.accent)
-    gpu.set(22, menuY + 7, "═══════════════════════════════════════")
+    gpu.set(22, menuY + 8, "═══════════════════════════════════════")
     
     gpu.setForeground(colors.textDim)
     local adminCount = 0
@@ -1113,7 +1114,7 @@ local function adminMainMenu()
     local sessionCount = 0
     for _ in pairs(activeSessions) do sessionCount = sessionCount + 1 end
     
-    gpu.set(24, menuY + 8, "Admins: " .. adminCount .. " • Sessions: " .. sessionCount)
+    gpu.set(24, menuY + 9, "Admins: " .. adminCount .. " • Sessions: " .. sessionCount)
     
     gpu.setForeground(colors.error)
     gpu.set(22, h - 1, "Press F5 to exit admin mode")
@@ -1123,7 +1124,7 @@ local function adminMainMenu()
         
         if code == 63 then
             return nil
-        elseif char and char >= string.byte('1') and char <= string.byte('6') then
+        elseif char and char >= string.byte('1') and char <= string.byte('7') then
             return char
         end
     end
@@ -1377,6 +1378,168 @@ local function adminViewSessions()
     event.pull("key_down")
 end
 
+local function adminManageControllers()
+    clearScreen()
+    drawAdminHeader("◆ MANAGE CONTROLLERS ◆", "View and remove controllers")
+    
+    drawBox(5, 6, 70, h - 8, 0x1F2937)
+    
+    gpu.setForeground(colors.accent)
+    gpu.set(7, 7, "#")
+    gpu.set(10, 7, "World/Dimension")
+    gpu.set(32, 7, "Controller Name")
+    gpu.set(55, 7, "Status")
+    gpu.set(68, 7, "HB")
+    gpu.set(7, 8, "─────────────────────────────────────────────────────────────────")
+    
+    local y = 9
+    local controllerList = {}
+    local now = computer.uptime()
+    
+    for address, ctrl in pairs(turretControllers) do
+        table.insert(controllerList, {address = address, ctrl = ctrl})
+    end
+    table.sort(controllerList, function(a, b) 
+        return a.ctrl.world < b.ctrl.world 
+    end)
+    
+    for i, entry in ipairs(controllerList) do
+        if y >= h - 5 then break end
+        
+        local ctrl = entry.ctrl
+        local timeDiff = now - ctrl.lastHeartbeat
+        local isActive = timeDiff < 90
+        
+        gpu.setForeground(isActive and colors.text or colors.textDim)
+        gpu.set(7, y, tostring(i))
+        
+        gpu.setForeground(isActive and colors.accent or colors.textDim)
+        local world = ctrl.world or "Unknown"
+        if #world > 18 then world = world:sub(1, 15) .. "..." end
+        gpu.set(10, y, world)
+        
+        gpu.setForeground(isActive and colors.text or colors.textDim)
+        local name = ctrl.name or "Unknown"
+        if #name > 20 then name = name:sub(1, 17) .. "..." end
+        gpu.set(32, y, name)
+        
+        gpu.setForeground(isActive and colors.success or colors.error)
+        gpu.set(55, y, isActive and "ONLINE" or "OFFLINE")
+        
+        gpu.setForeground(colors.textDim)
+        local hbTime = math.floor(timeDiff)
+        gpu.set(68, y, hbTime .. "s")
+        
+        y = y + 1
+    end
+    
+    if #controllerList == 0 then
+        gpu.setForeground(colors.textDim)
+        gpu.set(7, 9, "No controllers registered")
+    end
+    
+    gpu.setForeground(colors.warning)
+    gpu.set(7, h - 3, "Enter controller # to remove, 'A' for cleanup all offline, or 0 to cancel:")
+    
+    gpu.setForeground(colors.text)
+    gpu.set(7, h - 1, "Choice: ")
+    
+    -- Get input
+    local input = ""
+    local cursorX = 15
+    
+    while true do
+        local _, _, char, code = event.pull("key_down")
+        
+        if code == 28 then -- Enter
+            break
+        elseif code == 14 and #input > 0 then -- Backspace
+            input = input:sub(1, -2)
+            gpu.set(cursorX, h - 1, "     ")
+            gpu.set(cursorX, h - 1, input)
+        elseif char == string.byte('a') or char == string.byte('A') then
+            input = "A"
+            gpu.set(cursorX, h - 1, input)
+            break
+        elseif char and char >= string.byte('0') and char <= string.byte('9') and #input < 3 then
+            input = input .. string.char(char)
+            gpu.set(cursorX, h - 1, input)
+        end
+    end
+    
+    if input == "A" or input == "a" then
+        -- Cleanup all offline controllers
+        if not confirmAction("Remove ALL offline controllers?") then
+            showMessage("Cancelled", "warning", 1)
+            return
+        end
+        
+        local removedCount = 0
+        local now = computer.uptime()
+        
+        for address, ctrl in pairs(turretControllers) do
+            local timeDiff = now - ctrl.lastHeartbeat
+            if timeDiff >= 90 then
+                turretControllers[address] = nil
+                if controllerTrustedPlayers[ctrl.id] then
+                    controllerTrustedPlayers[ctrl.id] = nil
+                end
+                removedCount = removedCount + 1
+            end
+        end
+        
+        -- Update stats
+        stats.totalControllers = 0
+        stats.totalTurrets = 0
+        for _, ctrl in pairs(turretControllers) do
+            stats.totalControllers = stats.totalControllers + 1
+            stats.totalTurrets = stats.totalTurrets + ctrl.turretCount
+        end
+        
+        log("Cleaned up " .. removedCount .. " offline controllers", "ADMIN")
+        showMessage("✓ Removed " .. removedCount .. " offline controllers", "success", 2)
+        return
+    end
+    
+    local choice = tonumber(input)
+    
+    if not choice or choice == 0 then
+        showMessage("Cancelled", "warning", 1)
+        return
+    end
+    
+    if choice < 1 or choice > #controllerList then
+        showMessage("✗ Invalid controller number", "error", 2)
+        return
+    end
+    
+    local selected = controllerList[choice]
+    
+    if not confirmAction("Remove '" .. selected.ctrl.name .. "'?") then
+        showMessage("Cancelled", "warning", 1)
+        return
+    end
+    
+    -- Remove controller
+    turretControllers[selected.address] = nil
+    
+    -- Remove controller-specific players
+    if controllerTrustedPlayers[selected.ctrl.id] then
+        controllerTrustedPlayers[selected.ctrl.id] = nil
+    end
+    
+    -- Update stats
+    stats.totalControllers = 0
+    stats.totalTurrets = 0
+    for _, ctrl in pairs(turretControllers) do
+        stats.totalControllers = stats.totalControllers + 1
+        stats.totalTurrets = stats.totalTurrets + ctrl.turretCount
+    end
+    
+    log("Controller removed: " .. selected.ctrl.name, "ADMIN")
+    showMessage("✓ Controller removed", "success", 2)
+end
+
 -- Key press handler for admin mode
 local function handleKeyPress(eventType, _, _, code)
     if code == 63 then
@@ -1421,6 +1584,8 @@ local function handleKeyPress(eventType, _, _, code)
                     elseif choice == string.byte('5') then
                         adminViewSessions()
                     elseif choice == string.byte('6') then
+                        adminManageControllers()
+                    elseif choice == string.byte('7') then
                         adminMode = false
                         adminAuthenticated = false
                         log("Admin mode exited by: " .. username, "ADMIN")
