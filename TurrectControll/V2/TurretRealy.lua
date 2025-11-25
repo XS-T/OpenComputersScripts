@@ -477,8 +477,8 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                     end
                 end
                 
-                -- Broadcast commands to all controllers
-                if data.type == "add_player" or data.type == "remove_player" or data.type == "sync_trusted" then
+                -- Broadcast commands to all controllers (except sync_trusted)
+                if data.type == "add_player" or data.type == "remove_player" then
                     addToLog("→ Broadcast to controllers", "SERVER")
                     
                     for clientId, client in pairs(registeredClients) do
@@ -486,6 +486,20 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                             pcall(client.tunnel.send, messageToUse)
                             stats.messagesToClients = stats.messagesToClients + 1
                         end
+                    end
+                    return
+                end
+                
+                -- sync_trusted is sent to specific controller (last sender)
+                if data.type == "sync_trusted" then
+                    local targetTunnel = registeredClients["_last_sender"]
+                    
+                    if targetTunnel then
+                        addToLog("→ Sync to controller", "SERVER")
+                        pcall(targetTunnel.send, messageToUse)
+                        stats.messagesToClients = stats.messagesToClients + 1
+                    else
+                        addToLog("No target for sync!", "ERROR")
                     end
                     return
                 end
