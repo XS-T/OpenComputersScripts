@@ -1093,6 +1093,7 @@ end
     
     modem.send(sender, PORT, serialization.serialize(response))
     drawServerUI()
+end
 
 -- Admin Panel UI Functions
 local function clearScreen()
