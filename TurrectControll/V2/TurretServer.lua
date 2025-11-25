@@ -105,9 +105,19 @@ local function encryptMessage(plaintext)
     if not plaintext or plaintext == "" then
         return nil
     end
-    local iv = data.random(16)
-    local encrypted = data.encrypt(plaintext, ENCRYPTION_KEY, iv)
-    return data.encode64(iv .. encrypted)
+    
+    local success, result = pcall(function()
+        local iv = data.random(16)
+        local encrypted = data.encrypt(plaintext, ENCRYPTION_KEY, iv)
+        return data.encode64(iv .. encrypted)
+    end)
+    
+    if success then
+        return result
+    else
+        -- Encryption failed, return nil
+        return nil
+    end
 end
 
 local function decryptMessage(ciphertext)
@@ -161,7 +171,7 @@ local function loadAdminAccounts()
         -- Create default admin account
         adminAccounts["admin"] = {
             passwordHash = hashPassword("admin123"),
-            created = os.time(),
+            created = computer.uptime(),
             lastLogin = 0,
             permissions = "full"
         }
@@ -204,12 +214,18 @@ local function createAdminAccount(username, password)
     
     adminAccounts[username] = {
         passwordHash = hashPassword(password),
-        created = os.time(),
+        created = computer.uptime(),
         lastLogin = 0,
         permissions = "full"
     }
     
-    saveAdminAccounts()
+    local saveOk = saveAdminAccounts()
+    if not saveOk then
+        -- Remove the account if save failed
+        adminAccounts[username] = nil
+        return false, "Failed to save account"
+    end
+    
     log("Admin account created: " .. username, "ADMIN")
     return true, "Account created"
 end
@@ -242,13 +258,13 @@ local function createSession(username)
     local token = generateSessionToken()
     activeSessions[token] = {
         username = username,
-        loginTime = os.time(),
-        lastActivity = os.time()
+        loginTime = computer.uptime(),
+        lastActivity = computer.uptime()
     }
     
     -- Update last login
     if adminAccounts[username] then
-        adminAccounts[username].lastLogin = os.time()
+        adminAccounts[username].lastLogin = computer.uptime()
         saveAdminAccounts()
     end
     
@@ -261,13 +277,13 @@ local function validateSession(token)
         return false, nil
     end
     
-    -- Session timeout: 30 minutes
-    if os.time() - session.lastActivity > 1800 then
+    -- Session timeout: 30 minutes (1800 seconds)
+    if (computer.uptime() - session.lastActivity) > 1800 then
         activeSessions[token] = nil
         return false, nil
     end
     
-    session.lastActivity = os.time()
+    session.lastActivity = computer.uptime()
     return true, session.username
 end
 
@@ -996,7 +1012,14 @@ local function adminViewAccounts()
         
         gpu.setForeground(colors.textDim)
         if account.lastLogin and account.lastLogin > 0 then
-            gpu.set(25, y, os.date("%Y-%m-%d %H:%M", account.lastLogin))
+            local timeSince = math.floor(computer.uptime() - account.lastLogin)
+            if timeSince < 60 then
+                gpu.set(25, y, timeSince .. "s ago")
+            elseif timeSince < 3600 then
+                gpu.set(25, y, math.floor(timeSince / 60) .. "m ago")
+            else
+                gpu.set(25, y, math.floor(timeSince / 3600) .. "h ago")
+            end
         else
             gpu.set(25, y, "Never")
         end
@@ -1038,15 +1061,19 @@ local function adminCreateAccount()
     
     gpu.setForeground(colors.textDim)
     gpu.set(5, 13, "Creating account...")
+    gpu.set(5, 14, "Hashing password...")
     
     local ok, msg = createAdminAccount(username, password)
+    
+    -- Clear status lines
+    gpu.fill(5, 13, 70, 2, " ")
     
     if ok then
         gpu.setForeground(colors.success)
         gpu.set(5, 13, "✓ Account created: " .. username)
     else
         gpu.setForeground(colors.error)
-        gpu.set(5, 13, "✗ " .. msg)
+        gpu.set(5, 13, "✗ " .. (msg or "Failed to create account"))
     end
     
     os.sleep(2)
@@ -1129,6 +1156,8 @@ local function adminViewSessions()
     
     local y = 8
     local sessionCount = 0
+    local currentUptime = computer.uptime()
+    
     for token, session in pairs(activeSessions) do
         sessionCount = sessionCount + 1
         
@@ -1136,11 +1165,24 @@ local function adminViewSessions()
         gpu.set(5, y, session.username)
         
         gpu.setForeground(colors.textDim)
-        gpu.set(25, y, os.date("%H:%M:%S", session.loginTime))
+        local loginDuration = math.floor(currentUptime - session.loginTime)
+        if loginDuration < 60 then
+            gpu.set(25, y, loginDuration .. "s ago")
+        elseif loginDuration < 3600 then
+            gpu.set(25, y, math.floor(loginDuration / 60) .. "m ago")
+        else
+            gpu.set(25, y, math.floor(loginDuration / 3600) .. "h ago")
+        end
         
-        local timeSince = os.time() - session.lastActivity
+        local timeSince = math.floor(currentUptime - session.lastActivity)
         gpu.setForeground(timeSince < 60 and colors.success or colors.warning)
-        gpu.set(50, y, timeSince .. "s ago")
+        if timeSince < 60 then
+            gpu.set(50, y, timeSince .. "s ago")
+        elseif timeSince < 3600 then
+            gpu.set(50, y, math.floor(timeSince / 60) .. "m ago")
+        else
+            gpu.set(50, y, math.floor(timeSince / 3600) .. "h ago")
+        end
         
         y = y + 1
         if y >= h - 2 then break end
@@ -1283,9 +1325,9 @@ local function main()
         end
         
         -- Cleanup expired sessions
-        local currentTime = os.time()
+        local currentUptime = computer.uptime()
         for token, session in pairs(activeSessions) do
-            if currentTime - session.lastActivity > 1800 then
+            if (currentUptime - session.lastActivity) > 1800 then
                 activeSessions[token] = nil
                 log("Session expired: " .. session.username, "SECURITY")
             end
