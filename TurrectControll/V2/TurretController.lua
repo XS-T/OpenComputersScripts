@@ -357,12 +357,21 @@ local function handleMessage(eventType, _, sender, port, distance, message)
     if data.type == "sync_trusted" then
         addToLog("Received sync from server", "SYNC")
         
+        -- Clear all turrets first to start fresh
+        for _, turret in ipairs(turretProxies) do
+            pcall(function()
+                local currentPlayers = turret.getTrustedPlayers()
+                for _, player in ipairs(currentPlayers) do
+                    pcall(turret.removeTrustedPlayer, player)
+                end
+            end)
+        end
+        
         -- Sync global list
         if data.players then
             trustedPlayers = {}
             for _, player in ipairs(data.players) do
                 table.insert(trustedPlayers, player)
-                addTrustedPlayerAll(player)
             end
             addToLog("Synced " .. #trustedPlayers .. " global players", "SUCCESS")
         end
@@ -372,9 +381,17 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             localTrustedPlayers = {}
             for _, player in ipairs(data.controller_players) do
                 table.insert(localTrustedPlayers, player)
-                addTrustedPlayerAll(player)
             end
             addToLog("Synced " .. #localTrustedPlayers .. " local players", "SUCCESS")
+        end
+        
+        -- Now add all players to all turrets
+        for _, player in ipairs(trustedPlayers) do
+            addTrustedPlayerAll(player)
+        end
+        
+        for _, player in ipairs(localTrustedPlayers) do
+            addTrustedPlayerAll(player)
         end
         
         stats.syncCount = stats.syncCount + 1
@@ -534,22 +551,8 @@ local function main()
     print("")
     print("Controller running! Press Ctrl+C to stop")
     
-    -- Start heartbeat
+    -- Start heartbeat (syncs every 30 seconds automatically)
     event.timer(1, sendHeartbeat)
-    
-    -- Periodic re-sync (every 5 minutes)
-    event.timer(300, function()
-        if relayConnected then
-            addToLog("Requesting re-sync...", "SYNC")
-            local registration = {
-                type = "controller_register",
-                controller_name = CONTROLLER_NAME,
-                world_name = WORLD_NAME,
-                turret_count = #turretProxies
-            }
-            sendToRelay(registration)
-        end
-    end, math.huge)
     
     -- Listen for messages
     event.listen("modem_message", handleMessage)
