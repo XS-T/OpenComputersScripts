@@ -843,6 +843,19 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         
         log("Sent controller list to " .. username, "INFO")
         
+    -- Command: Get controller-specific players
+    elseif msgData.command == "getControllerPlayers" then
+        local controllerId = msgData.controllerId
+        
+        if not controllerId then
+            response.reason = "Controller ID required"
+        else
+            response.status = "success"
+            response.players = controllerTrustedPlayers[controllerId] or {}
+            response.controllerId = controllerId
+            log("Sent controller-specific players to " .. username, "INFO")
+        end
+        
     else
         response.reason = "Unknown command: " .. tostring(msgData.command)
         log("Unknown command from " .. username, "ERROR")
