@@ -132,16 +132,92 @@ local function updateDisplay()
     end
     
     print("")
+    print("═══════════════════════════════════════════════════════")
+    print("CONNECTED CLIENTS:")
+    print("═══════════════════════════════════════════════════════")
+    
+    -- Show controllers
+    local controllerCount = 0
+    local onlineControllers = 0
+    for clientId, client in pairs(registeredClients) do
+        if clientId ~= "_last_sender" and client.type == "controller" then
+            controllerCount = controllerCount + 1
+            local timeDiff = computer.uptime() - (client.lastSeen or 0)
+            local isOnline = timeDiff < 90
+            if isOnline then onlineControllers = onlineControllers + 1 end
+        end
+    end
+    
+    print("Controllers: " .. onlineControllers .. "/" .. controllerCount)
+    for clientId, client in pairs(registeredClients) do
+        if clientId ~= "_last_sender" and client.type == "controller" then
+            local timeDiff = computer.uptime() - (client.lastSeen or 0)
+            local isOnline = timeDiff < 90
+            
+            if isOnline then
+                io.write("\27[32m") -- Green
+                print("  ✓ " .. (client.name or "Unknown") .. " (" .. (client.world or "?") .. ") - " .. math.floor(timeDiff) .. "s")
+            else
+                io.write("\27[31m") -- Red
+                print("  ✗ " .. (client.name or "Unknown") .. " (" .. (client.world or "?") .. ") - OFFLINE")
+            end
+            io.write("\27[0m") -- Reset
+        end
+    end
+    
+    if controllerCount == 0 then
+        print("  (no controllers connected)")
+    end
+    
+    print("")
+    
+    -- Show managers
+    local managerCount = 0
+    local onlineManagers = 0
+    for clientId, client in pairs(registeredClients) do
+        if clientId ~= "_last_sender" and client.type == "manager" then
+            managerCount = managerCount + 1
+            local timeDiff = computer.uptime() - (client.lastSeen or 0)
+            local isOnline = timeDiff < 90
+            if isOnline then onlineManagers = onlineManagers + 1 end
+        end
+    end
+    
+    print("Managers: " .. onlineManagers .. "/" .. managerCount)
+    for clientId, client in pairs(registeredClients) do
+        if clientId ~= "_last_sender" and client.type == "manager" then
+            local timeDiff = computer.uptime() - (client.lastSeen or 0)
+            local isOnline = timeDiff < 90
+            
+            if isOnline then
+                io.write("\27[32m") -- Green
+                print("  ✓ Manager " .. clientId:sub(1, 8) .. " - " .. math.floor(timeDiff) .. "s")
+            else
+                io.write("\27[31m") -- Red
+                print("  ✗ Manager " .. clientId:sub(1, 8) .. " - OFFLINE")
+            end
+            io.write("\27[0m") -- Reset
+        end
+    end
+    
+    if managerCount == 0 then
+        print("  (no managers connected)")
+    end
+    
+    print("")
+    print("═══════════════════════════════════════════════════════")
+    print("STATISTICS:")
+    print("═══════════════════════════════════════════════════════")
     print("Wireless Port: " .. PORT)
     print("→ Server: " .. stats.messagesForwarded .. " (encrypted)")
     print("→ Clients: " .. stats.messagesToClients)
-    print("Controllers: " .. stats.controllers .. " | Managers: " .. stats.managers)
+    print("Uptime: " .. math.floor(stats.uptime / 60) .. "m " .. (stats.uptime % 60) .. "s")
     print("")
     print("═══════════════════════════════════════════════════════")
     print("ACTIVITY LOG:")
     print("═══════════════════════════════════════════════════════")
     
-    for i = 1, math.min(10, #log) do
+    for i = 1, math.min(8, #log) do
         local entry = log[i]
         if entry.category == "SUCCESS" then
             io.write("\27[32m") -- Green
@@ -311,7 +387,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                 type = "controller",
                 name = data.controller_name or "Unknown",
                 world = data.world_name or "Unknown",
-                lastSeen = os.time()
+                lastSeen = computer.uptime()
             }
             
             stats.controllers = 0
@@ -347,6 +423,11 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             return
         end
         
+        -- Update lastSeen for heartbeats and regular messages
+        if data.tunnelAddress and registeredClients[data.tunnelAddress] then
+            registeredClients[data.tunnelAddress].lastSeen = computer.uptime()
+        end
+        
         -- Handle manager registration
         if data.type == "manager_register" then
             local clientId = data.tunnelAddress
@@ -354,7 +435,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             registeredClients[clientId] = {
                 tunnel = sourceTunnel,
                 type = "manager",
-                lastSeen = os.time()
+                lastSeen = computer.uptime()
             }
             
             stats.controllers = 0
@@ -580,15 +661,60 @@ local function main()
         os.sleep(1)
         stats.uptime = stats.uptime + 1
         
-        -- Cleanup stale clients
-        local now = os.time()
+        -- Update display every 5 seconds to show offline status
+        if stats.uptime % 5 == 0 then
+            updateDisplay()
+        end
+        
+        -- Cleanup stale clients and mark as offline
+        local now = computer.uptime()
+        local anyOffline = false
+        
         for clientId, client in pairs(registeredClients) do
             if clientId ~= "_last_sender" and client.lastSeen then
-                if now - client.lastSeen > 300 then
+                local timeDiff = now - client.lastSeen
+                
+                -- Mark as offline after 90 seconds
+                if timeDiff >= 90 and not client.markedOffline then
+                    client.markedOffline = true
+                    anyOffline = true
+                    
+                    if client.type == "controller" then
+                        addToLog("Controller OFFLINE: " .. (client.name or "Unknown"), "ERROR")
+                    else
+                        addToLog("Manager OFFLINE: " .. clientId:sub(1, 8), "ERROR")
+                    end
+                end
+                
+                -- Remove completely after 5 minutes
+                if timeDiff > 300 then
                     registeredClients[clientId] = nil
-                    addToLog("Client timeout: " .. clientId:sub(1, 8), "ERROR")
+                    
+                    if client.type == "controller" then
+                        addToLog("Controller removed: " .. (client.name or "Unknown"), "ERROR")
+                    else
+                        addToLog("Manager removed: " .. clientId:sub(1, 8), "ERROR")
+                    end
+                    
+                    -- Recalculate stats
+                    stats.controllers = 0
+                    stats.managers = 0
+                    for _, c in pairs(registeredClients) do
+                        if c.type == "controller" then
+                            stats.controllers = stats.controllers + 1
+                        elseif c.type == "manager" then
+                            stats.managers = stats.managers + 1
+                        end
+                    end
+                    
+                    anyOffline = true
                 end
             end
+        end
+        
+        -- Update display if anything went offline
+        if anyOffline then
+            updateDisplay()
         end
     end
 end
