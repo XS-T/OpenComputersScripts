@@ -248,8 +248,8 @@ local function registerWithRelay()
     if sendToRelay(registration) then
         addToLog("Registration sent via tunnel", "RELAY")
         
-        -- Wait for ACK
-        local deadline = computer.uptime() + 5
+        -- Wait for sync response
+        local deadline = computer.uptime() + 10
         while computer.uptime() < deadline do
             local eventData = {event.pull(0.5, "modem_message")}
             if eventData[1] then
@@ -265,11 +265,33 @@ local function registerWithRelay()
                             relayConnected = true
                             addToLog("Connected to relay: " .. response.relay_name, "SUCCESS")
                             updateDisplay()
-                            return true
+                            -- Keep waiting for sync
                         elseif response.type == "sync_trusted" then
-                            -- Got sync immediately
+                            -- Got sync from server!
                             relayConnected = true
-                            addToLog("Connected and synced!", "SUCCESS")
+                            
+                            -- Process the sync immediately
+                            if response.players then
+                                trustedPlayers = {}
+                                for _, player in ipairs(response.players) do
+                                    table.insert(trustedPlayers, player)
+                                    addTrustedPlayerAll(player)
+                                end
+                                addToLog("Synced " .. #trustedPlayers .. " global players", "SUCCESS")
+                            end
+                            
+                            if response.controller_players then
+                                localTrustedPlayers = {}
+                                for _, player in ipairs(response.controller_players) do
+                                    table.insert(localTrustedPlayers, player)
+                                    addTrustedPlayerAll(player)
+                                end
+                                addToLog("Synced " .. #localTrustedPlayers .. " local players", "SUCCESS")
+                            end
+                            
+                            stats.syncCount = stats.syncCount + 1
+                            addToLog("Registration complete!", "SUCCESS")
+                            updateDisplay()
                             return true
                         end
                     end
@@ -277,8 +299,14 @@ local function registerWithRelay()
             end
         end
         
-        addToLog("No response from relay", "ERROR")
-        return false
+        if relayConnected then
+            -- Got relay ack but no sync yet - that's okay
+            addToLog("Connected, waiting for sync...", "RELAY")
+            return true
+        else
+            addToLog("No response from relay", "ERROR")
+            return false
+        end
     end
     
     return false
@@ -507,6 +535,20 @@ local function main()
     
     -- Start heartbeat
     event.timer(1, sendHeartbeat)
+    
+    -- Periodic re-sync (every 5 minutes)
+    event.timer(300, function()
+        if relayConnected then
+            addToLog("Requesting re-sync...", "SYNC")
+            local registration = {
+                type = "controller_register",
+                controller_name = CONTROLLER_NAME,
+                world_name = WORLD_NAME,
+                turret_count = #turretProxies
+            }
+            sendToRelay(registration)
+        end
+    end, math.huge)
     
     -- Listen for messages
     event.listen("modem_message", handleMessage)
