@@ -1,44 +1,34 @@
--- Digital Currency Client (Beautiful UI) for OpenComputers 1.7.10
--- Connects to relay via TUNNEL (linked card) ONLY
--- Modern, clean interface
--- ADMIN-ONLY REGISTRATION: Users cannot self-register
+-- GPS Tracking Server for OpenComputers 1.7.10
+-- Tracks player/drone/entity locations via network
+-- Integrates with existing relay infrastructure
 
 local component = require("component")
 local event = require("event")
 local serialization = require("serialization")
-local term = require("term")
+local filesystem = require("filesystem")
 local computer = require("computer")
 local gpu = component.gpu
-local unicode = require("unicode")
+local term = require("term")
 
--- Check for tunnel
-if not component.isAvailable("tunnel") then
-    print("═══════════════════════════════════════════════════════")
-    print("ERROR: LINKED CARD REQUIRED!")
-    print("═══════════════════════════════════════════════════════")
-    print("")
-    print("This client requires a linked card to connect to a relay.")
-    print("")
-    print("SETUP:")
-    print("1. Get a linked card pair (craft 2 linked cards + ender pearl)")
-    print("2. Install one card in this computer (client)")
-    print("3. Install the paired card in a relay computer")
-    print("4. The relay will forward to the server wirelessly")
-    print("")
-    return
-end
+-- Configuration
+local PORT = 1001  -- Different port from currency server
+local SERVER_NAME = "GPSTracker"
+local DATA_DIR = "/home/gps/"
 
-local tunnel = component.tunnel
+-- Network components
+local modem = component.modem
 
--- State
-local username = nil
-local password = nil
-local balance = 0
-local loggedIn = false
-local relayConnected = false
-local clientId = tunnel.address
+-- Data structures
+local trackedEntities = {}  -- entityId -> {name, x, y, z, dimension, lastUpdate, relay, type}
+local locationHistory = {}  -- entityId -> array of recent positions
+local relays = {}
+local stats = {
+    totalEntities = 0,
+    totalUpdates = 0,
+    relayCount = 0
+}
 
--- UI Config
+-- Screen setup
 local w, h = gpu.getResolution()
 gpu.setResolution(80, 25)
 w, h = 80, 25
@@ -52,615 +42,486 @@ local colors = {
     error = 0xEF4444,
     warning = 0xF59E0B,
     text = 0xFFFFFF,
-    textDim = 0x9CA3AF,
-    border = 0x374151,
-    inputBg = 0x1F2937,
-    balance = 0x10B981
+    textDim = 0x9CA3AF
 }
 
--- Draw functions
-local function drawBox(x, y, width, height, color, title)
-    gpu.setBackground(color or colors.bg)
-    gpu.fill(x, y, width, height, " ")
-    
-    if title then
-        gpu.setBackground(colors.header)
-        gpu.fill(x, y, width, 1, " ")
-        gpu.setForeground(colors.text)
-        local titleX = x + math.floor((width - unicode.len(title)) / 2)
-        gpu.set(titleX, y, title)
-        gpu.setBackground(color or colors.bg)
-    end
+-- Initialize data directory
+if not filesystem.exists(DATA_DIR) then
+    filesystem.makeDirectory(DATA_DIR)
 end
 
-local function drawLine(x, y, width, char)
-    char = char or "─"
-    gpu.set(x, y, string.rep(char, width))
-end
-
-local function clearScreen()
-    gpu.setBackground(colors.bg)
-    gpu.setForeground(colors.text)
-    gpu.fill(1, 1, w, h, " ")
-end
-
-local function drawHeader(title, subtitle)
-    -- Top bar
-    gpu.setBackground(colors.header)
-    gpu.fill(1, 1, w, 3, " ")
+-- Utility functions
+local function log(message, category)
+    category = category or "INFO"
+    local entry = {
+        time = os.date("%Y-%m-%d %H:%M:%S"),
+        category = category,
+        message = message
+    }
     
-    -- Title
-    gpu.setForeground(colors.text)
-    local titleX = math.floor((w - unicode.len(title)) / 2)
-    gpu.set(titleX, 2, title)
-    
-    if subtitle then
-        gpu.setForeground(colors.textDim)
-        local subX = math.floor((w - unicode.len(subtitle)) / 2)
-        gpu.set(subX, 3, subtitle)
+    local file = io.open(DATA_DIR .. "gps.log", "a")
+    if file then
+        file:write(serialization.serialize(entry) .. "\n")
+        file:close()
     end
     
-    gpu.setBackground(colors.bg)
+    stats.totalUpdates = stats.totalUpdates + 1
 end
 
-local function drawFooter(text)
-    gpu.setBackground(colors.border)
-    gpu.fill(1, h, w, 1, " ")
-    gpu.setForeground(colors.textDim)
-    gpu.set(2, h, text)
-    gpu.setBackground(colors.bg)
-end
-
-local function showStatus(msg, msgType)
-    msgType = msgType or "info"
-    local color = colors.text
-    
-    if msgType == "success" then color = colors.success
-    elseif msgType == "error" then color = colors.error
-    elseif msgType == "warning" then color = colors.warning
+local function saveData()
+    local file = io.open(DATA_DIR .. "entities.dat", "w")
+    if file then
+        file:write(serialization.serialize(trackedEntities))
+        file:close()
+        return true
     end
-    
-    gpu.setBackground(colors.bg)
-    gpu.fill(1, h - 1, w, 1, " ")
-    gpu.setForeground(color)
-    local msgX = math.floor((w - unicode.len(msg)) / 2)
-    gpu.set(msgX, h - 1, msg)
-    gpu.setForeground(colors.text)
+    return false
 end
 
-local function input(prompt, y, hidden, maxLen)
-    maxLen = maxLen or 30
-    gpu.setForeground(colors.text)
-    gpu.set(2, y, prompt)
-    
-    local x = 2 + unicode.len(prompt)
-    
-    -- Draw input box
-    gpu.setBackground(colors.inputBg)
-    gpu.fill(x, y, maxLen + 2, 1, " ")
-    
-    x = x + 1
-    gpu.set(x, y, "")
-    
-    local text = ""
-    while true do
-        local _, _, char, code = event.pull("key_down")
+local function loadData()
+    local file = io.open(DATA_DIR .. "entities.dat", "r")
+    if file then
+        local data = file:read("*a")
+        file:close()
         
-        if code == 28 then -- Enter
-            break
-        elseif code == 14 and unicode.len(text) > 0 then -- Backspace
-            text = unicode.sub(text, 1, -2)
-            gpu.setBackground(colors.inputBg)
-            gpu.fill(x, y, maxLen, 1, " ")
-            if hidden then
-                gpu.set(x, y, string.rep("•", unicode.len(text)))
-            else
-                gpu.set(x, y, text)
-            end
-        elseif char >= 32 and char < 127 and unicode.len(text) < maxLen then
-            text = text .. string.char(char)
-            if hidden then
-                gpu.set(x, y, string.rep("•", unicode.len(text)))
-            else
-                gpu.set(x, y, text)
+        if data and data ~= "" then
+            local success, loaded = pcall(serialization.unserialize, data)
+            if success and loaded then
+                trackedEntities = loaded
+                stats.totalEntities = 0
+                for _ in pairs(trackedEntities) do
+                    stats.totalEntities = stats.totalEntities + 1
+                end
+                return true
             end
         end
     end
-    
-    gpu.setBackground(colors.bg)
-    return text
+    return false
 end
 
-local function drawButton(x, y, text, selected)
-    local bg = selected and colors.accent or colors.border
-    local fg = selected and colors.text or colors.textDim
-    
-    gpu.setBackground(bg)
-    gpu.setForeground(fg)
-    gpu.set(x, y, " " .. text .. " ")
-    gpu.setBackground(colors.bg)
-    gpu.setForeground(colors.text)
+-- Calculate distance between two points
+local function calculateDistance(x1, y1, z1, x2, y2, z2)
+    local dx = x2 - x1
+    local dy = y2 - y1
+    local dz = z2 - z1
+    return math.sqrt(dx*dx + dy*dy + dz*dz)
 end
 
--- Send message and wait for response
-local function sendAndWait(data, timeout)
-    timeout = timeout or 5
+-- Register or update entity location
+local function updateLocation(entityId, name, x, y, z, dimension, entityType, relayAddress)
+    dimension = dimension or "overworld"
+    entityType = entityType or "unknown"
     
-    if not relayConnected then
+    local now = os.time()
+    
+    if not trackedEntities[entityId] then
+        stats.totalEntities = stats.totalEntities + 1
+    end
+    
+    -- Store previous location for history
+    if trackedEntities[entityId] then
+        if not locationHistory[entityId] then
+            locationHistory[entityId] = {}
+        end
+        
+        table.insert(locationHistory[entityId], {
+            x = trackedEntities[entityId].x,
+            y = trackedEntities[entityId].y,
+            z = trackedEntities[entityId].z,
+            time = trackedEntities[entityId].lastUpdate
+        })
+        
+        -- Keep only last 50 positions
+        if #locationHistory[entityId] > 50 then
+            table.remove(locationHistory[entityId], 1)
+        end
+    end
+    
+    trackedEntities[entityId] = {
+        name = name,
+        x = x,
+        y = y,
+        z = z,
+        dimension = dimension,
+        lastUpdate = now,
+        relay = relayAddress,
+        type = entityType
+    }
+    
+    log(string.format("Location updated: %s (%s) at [%.1f, %.1f, %.1f] in %s", 
+        name, entityType, x, y, z, dimension), "LOCATION")
+    
+    saveData()
+    return true
+end
+
+-- Get entity location
+local function getLocation(entityId)
+    local entity = trackedEntities[entityId]
+    if entity then
         return {
-            type = "response",
-            success = false,
-            message = "Not connected to relay"
+            success = true,
+            name = entity.name,
+            x = entity.x,
+            y = entity.y,
+            z = entity.z,
+            dimension = entity.dimension,
+            type = entity.type,
+            lastUpdate = entity.lastUpdate,
+            age = os.time() - entity.lastUpdate
         }
     end
+    return {success = false, message = "Entity not found"}
+end
+
+-- Get all entities in range
+local function getEntitiesInRange(x, y, z, range, dimension)
+    dimension = dimension or "overworld"
+    local results = {}
     
-    -- Add tunnel info to every message
-    data.tunnelAddress = tunnel.address
-    data.tunnelChannel = tunnel.getChannel()
-    
-    local message = serialization.serialize(data)
-    tunnel.send(message)
-    
-    local deadline = computer.uptime() + timeout
-    while computer.uptime() < deadline do
-        local eventData = {event.pull(0.5, "modem_message")}
-        if eventData[1] then
-            local _, _, _, port, distance, msg = table.unpack(eventData)
-            
-            local isTunnel = (port == 0 or distance == nil or distance == math.huge)
-            
-            if isTunnel then
-                local success, response = pcall(serialization.unserialize, msg)
-                if success and response and response.type == "response" then
-                    return response
-                end
+    for id, entity in pairs(trackedEntities) do
+        if entity.dimension == dimension then
+            local dist = calculateDistance(x, y, z, entity.x, entity.y, entity.z)
+            if dist <= range then
+                table.insert(results, {
+                    id = id,
+                    name = entity.name,
+                    x = entity.x,
+                    y = entity.y,
+                    z = entity.z,
+                    distance = dist,
+                    type = entity.type,
+                    lastUpdate = entity.lastUpdate
+                })
             end
         end
     end
     
-    return nil
+    -- Sort by distance
+    table.sort(results, function(a, b) return a.distance < b.distance end)
+    
+    return results
 end
 
--- Register with relay
-local function registerWithRelay()
-    clearScreen()
-    drawHeader("◆ CONNECTING TO RELAY ◆", "Establishing secure tunnel connection")
-    
-    drawBox(20, 8, 40, 12, colors.bg)
-    
-    gpu.setForeground(colors.accent)
-    gpu.set(22, 10, "Tunnel Component Check:")
-    
-    -- Show tunnel info
-    gpu.setForeground(colors.text)
-    gpu.set(22, 11, "Address: " .. tunnel.address:sub(1, 20))
-    gpu.set(22, 12, "Channel: " .. tunnel.getChannel():sub(1, 20))
-    gpu.setForeground(colors.textDim)
-    gpu.set(22, 13, "Client ID: " .. clientId:sub(1, 20))
-    
-    gpu.setForeground(colors.text)
-    gpu.set(22, 15, "⟳ Sending registration...")
-    
-    drawFooter("Tunnel: " .. tunnel.address:sub(1, 16))
-    
-    local registration = serialization.serialize({
-        type = "client_register",
-        tunnelAddress = tunnel.address,
-        tunnelChannel = tunnel.getChannel()
-    })
-    
-    gpu.set(22, 16, "Message size: " .. #registration .. " bytes")
-    
-    local sendOk, sendErr = pcall(tunnel.send, registration)
-    if not sendOk then
-        gpu.setForeground(colors.error)
-        gpu.set(22, 17, "✗ Send error: " .. tostring(sendErr))
-        showStatus("Press any key to retry...", "error")
-        event.pull("key_down")
-        return false
+-- Get all tracked entities
+local function getAllEntities()
+    local results = {}
+    for id, entity in pairs(trackedEntities) do
+        table.insert(results, {
+            id = id,
+            name = entity.name,
+            x = entity.x,
+            y = entity.y,
+            z = entity.z,
+            dimension = entity.dimension,
+            type = entity.type,
+            lastUpdate = entity.lastUpdate,
+            age = os.time() - entity.lastUpdate
+        })
     end
     
-    gpu.setForeground(colors.success)
-    gpu.set(22, 17, "✓ Sent via tunnel")
+    -- Sort by last update (most recent first)
+    table.sort(results, function(a, b) return a.lastUpdate > b.lastUpdate end)
     
-    gpu.setForeground(colors.text)
-    gpu.set(22, 18, "Waiting for relay ACK...")
-    
-    local deadline = computer.uptime() + 5
-    local eventCount = 0
-    
-    while computer.uptime() < deadline do
-        local eventData = {event.pull(0.5, "modem_message")}
-        if eventData[1] then
-            eventCount = eventCount + 1
-            local eventType, _, sender, port, distance, msg = table.unpack(eventData)
-            
-            -- Debug on screen
-            gpu.fill(22, 19, 35, 1, " ")
-            gpu.setForeground(colors.textDim)
-            gpu.set(22, 19, "Event #" .. eventCount .. ": port=" .. tostring(port))
-            
-            -- Tunnel messages have port=0
-            local isTunnel = (port == 0 or distance == nil or distance == math.huge)
-            
-            if isTunnel then
-                gpu.setForeground(colors.success)
-                gpu.set(22, 20, "✓ Tunnel message detected")
-                
-                local success, response = pcall(serialization.unserialize, msg)
-                if success and response then
-                    gpu.set(22, 21, "Type: " .. tostring(response.type))
-                    
-                    if response.type == "relay_ack" then
-                        relayConnected = true
-                        
-                        clearScreen()
-                        drawHeader("◆ CONNECTION ESTABLISHED ◆")
-                        
-                        drawBox(20, 10, 40, 6, colors.bg)
-                        gpu.setForeground(colors.success)
-                        gpu.set(22, 11, "✓ Connected to relay")
-                        gpu.setForeground(colors.text)
-                        gpu.set(22, 12, "  " .. response.relay_name)
-                        
-                        if response.server_connected then
-                            gpu.setForeground(colors.success)
-                            gpu.set(22, 14, "✓ Server online")
-                        else
-                            gpu.setForeground(colors.warning)
-                            gpu.set(22, 14, "⚠ Server searching...")
-                        end
-                        
-                        showStatus("Press any key to continue...", "success")
-                        event.pull("key_down")
-                        return true
-                    else
-                        gpu.setForeground(colors.warning)
-                        gpu.set(22, 21, "Wrong type: " .. tostring(response.type))
-                    end
-                else
-                    gpu.setForeground(colors.error)
-                    gpu.set(22, 21, "Parse error")
-                end
-            else
-                gpu.setForeground(colors.textDim)
-                gpu.set(22, 20, "Wireless (ignored)")
-            end
-        end
-    end
-    
-    gpu.setForeground(colors.error)
-    gpu.fill(22, 15, 35, 10, " ")
-    gpu.set(22, 15, "✗ Connection failed")
-    gpu.setForeground(colors.text)
-    gpu.set(22, 17, "Events received: " .. eventCount)
-    gpu.set(22, 19, "Check:")
-    gpu.setForeground(colors.textDim)
-    gpu.set(22, 20, "• Relay is running")
-    gpu.set(22, 21, "• Paired linked card")
-    gpu.set(22, 22, "• Same channel ID")
-    
-    showStatus("Press any key to retry...", "error")
-    event.pull("key_down")
-    return false
+    return results
 end
 
--- Welcome screen
-local function welcomeScreen()
-    clearScreen()
-    drawHeader("◆ DIGITAL CURRENCY SYSTEM ◆", "Secure P2P Banking")
-    
-    -- Info box
-    drawBox(15, 7, 50, 5, colors.bg)
-    gpu.setForeground(colors.accent)
-    gpu.set(17, 8, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    gpu.setForeground(colors.textDim)
-    gpu.set(17, 9, "  Secured by linked card technology")
-    gpu.set(17, 10, "  End-to-end tunnel encryption")
-    gpu.setForeground(colors.accent)
-    gpu.set(17, 11, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    
-    -- Menu
-    gpu.setForeground(colors.text)
-    gpu.set(32, 15, "1  Login to Account")
-    gpu.set(32, 17, "2  Exit")
-    
-    -- Registration notice
-    gpu.setForeground(colors.textDim)
-    gpu.set(17, 20, "Note: Account registration is managed by")
-    gpu.set(17, 21, "      administrators at the server level.")
-    
-    drawFooter("Linked Card: " .. tunnel.getChannel():sub(1, 16) .. " • Secure Connection")
-    
-    local _, _, char = event.pull("key_down")
-    
-    if char == string.byte('1') then
-        return "login"
-    elseif char == string.byte('2') then
-        return "exit"
-    end
-    
-    return nil
-end
-
--- Login screen
-local function loginScreen()
-    clearScreen()
-    drawHeader("◆ LOGIN ◆", "Access your account")
-    
-    drawBox(20, 8, 40, 10, colors.bg)
-    
-    gpu.setForeground(colors.text)
-    local user = input("Username: ", 10, false, 20)
-    local pass = input("Password: ", 12, true, 20)
-    
-    showStatus("⟳ Authenticating...", "info")
-    
-    local response = sendAndWait({
-        command = "login",
-        username = user,
-        password = pass
-    })
-    
-    if response and response.success then
-        username = user
-        password = pass
-        balance = response.balance or 0
-        loggedIn = true
-        showStatus("✓ Login successful!", "success")
-        os.sleep(1)
-        return true
-    elseif response then
-        showStatus("✗ " .. (response.message or "Login failed"), "error")
-        os.sleep(2)
+-- Relay management
+local function registerRelay(address, relayName)
+    if not relays[address] then
+        relays[address] = {
+            address = address,
+            name = relayName,
+            lastSeen = computer.uptime()
+        }
+        stats.relayCount = stats.relayCount + 1
+        log("GPS Relay connected: " .. relayName, "RELAY")
     else
-        showStatus("✗ No response from server", "error")
-        os.sleep(2)
+        relays[address].lastSeen = computer.uptime()
     end
-    
-    return false
 end
 
--- Main menu
-local function mainMenu()
-    clearScreen()
-    drawHeader("◆ ACCOUNT DASHBOARD ◆", username)
+-- UI Drawing
+local function drawServerUI()
+    gpu.setBackground(0x0000AA)
+    gpu.setForeground(0xFFFFFF)
+    gpu.fill(1, 1, w, h, " ")
     
-    -- Balance display
-    drawBox(15, 6, 50, 5, colors.bg)
-    gpu.setForeground(colors.textDim)
-    gpu.set(17, 7, "BALANCE")
-    gpu.setForeground(colors.balance)
-    local balStr = string.format("%.2f CR", balance)
-    local balX = math.floor(40 - unicode.len(balStr) / 2)
-    gpu.set(balX, 9, balStr)
+    -- Header
+    gpu.setBackground(0x000080)
+    gpu.fill(1, 1, w, 3, " ")
+    local title = "=== " .. SERVER_NAME .. " ==="
+    gpu.set(math.floor((w - #title) / 2), 2, title)
     
-    -- Menu options
-    local menuY = 13
-    gpu.setForeground(colors.text)
-    gpu.set(25, menuY, "1  Check Balance")
-    gpu.set(25, menuY + 2, "2  Transfer Funds")
-    gpu.set(25, menuY + 4, "3  View Accounts")
-    gpu.set(25, menuY + 6, "4  Logout")
+    -- Stats panel
+    gpu.setBackground(0x1E1E1E)
+    gpu.setForeground(0x00FF00)
+    gpu.fill(1, 4, w, 2, " ")
+    gpu.set(2, 4, "Tracked Entities: " .. stats.totalEntities)
+    gpu.set(30, 4, "Updates: " .. stats.totalUpdates)
+    gpu.set(50, 4, "Relays: " .. stats.relayCount)
+    gpu.set(65, 4, "Port: " .. PORT)
     
-    drawFooter("Account: " .. username .. " • Connected")
+    gpu.setForeground(0xFFFF00)
+    gpu.set(2, 5, "Mode: GPS TRACKING")
     
-    local _, _, char = event.pull("key_down")
+    -- Relays
+    gpu.setBackground(0x2D2D2D)
+    gpu.setForeground(0xFFFF00)
+    gpu.fill(1, 7, w, 1, " ")
+    gpu.set(2, 7, "Connected Relays:")
     
-    if char == string.byte('1') then
-        -- Check balance
-        showStatus("⟳ Refreshing balance...", "info")
-        local response = sendAndWait({
-            command = "balance",
-            username = username,
-            password = password
-        })
+    gpu.setForeground(0xFFFFFF)
+    gpu.set(2, 8, "Name")
+    gpu.set(30, 8, "Address")
+    gpu.set(55, 8, "Status")
+    
+    local y = 9
+    local relayList = {}
+    for _, relay in pairs(relays) do
+        table.insert(relayList, relay)
+    end
+    table.sort(relayList, function(a, b) return a.lastSeen > b.lastSeen end)
+    
+    for i = 1, math.min(3, #relayList) do
+        local relay = relayList[i]
+        local now = computer.uptime()
+        local timeDiff = now - relay.lastSeen
+        local isActive = timeDiff < 60
         
-        if response and response.success then
-            balance = response.balance
-            showStatus("✓ Balance: " .. string.format("%.2f", balance) .. " CR", "success")
+        gpu.setForeground(isActive and 0x00FF00 or 0x888888)
+        local name = relay.name or "Unknown"
+        if #name > 25 then name = name:sub(1, 22) .. "..." end
+        gpu.set(2, y, name)
+        gpu.set(30, y, relay.address:sub(1, 16))
+        
+        gpu.setForeground(isActive and 0x00FF00 or 0xFF0000)
+        gpu.set(55, y, isActive and "ACTIVE" or "TIMEOUT")
+        y = y + 1
+    end
+    
+    -- Tracked entities
+    gpu.setForeground(0xFFFF00)
+    gpu.fill(1, 13, w, 1, " ")
+    gpu.set(2, 13, "Recently Active Entities:")
+    
+    gpu.setBackground(0x2D2D2D)
+    gpu.setForeground(0xFFFFFF)
+    gpu.set(2, 14, "Name")
+    gpu.set(25, 14, "Type")
+    gpu.set(38, 14, "Position")
+    gpu.set(60, 14, "Age")
+    
+    local entities = getAllEntities()
+    y = 15
+    for i = 1, math.min(8, #entities) do
+        local entity = entities[i]
+        local age = os.time() - entity.lastUpdate
+        local isStale = age > 300  -- 5 minutes
+        
+        gpu.setForeground(isStale and 0x888888 or 0xCCCCCC)
+        local name = entity.name
+        if #name > 20 then name = name:sub(1, 17) .. "..." end
+        gpu.set(2, y, name)
+        
+        gpu.setForeground(0xFFFF00)
+        gpu.set(25, y, entity.type:sub(1, 10))
+        
+        gpu.setForeground(0x00FF00)
+        local pos = string.format("%.0f,%.0f,%.0f", entity.x, entity.y, entity.z)
+        gpu.set(38, y, pos)
+        
+        gpu.setForeground(isStale and 0xFF0000 or 0x888888)
+        local ageStr
+        if age < 60 then
+            ageStr = age .. "s"
+        elseif age < 3600 then
+            ageStr = math.floor(age / 60) .. "m"
         else
-            showStatus("✗ " .. (response and response.message or "Failed"), "error")
+            ageStr = math.floor(age / 3600) .. "h"
         end
-        os.sleep(2)
+        gpu.set(60, y, ageStr)
         
-    elseif char == string.byte('2') then
-        -- Transfer
-        clearScreen()
-        drawHeader("◆ TRANSFER FUNDS ◆", "Send credits to another account")
+        y = y + 1
+    end
+    
+    -- Footer
+    gpu.setBackground(0x000080)
+    gpu.setForeground(0xFFFFFF)
+    gpu.fill(1, 25, w, 1, " ")
+    gpu.set(2, 25, "GPS Tracking Server - Real-time location monitoring")
+end
+
+-- Message handler
+local function handleMessage(eventType, _, sender, port, distance, message)
+    if port ~= PORT then return end
+    
+    local success, data = pcall(serialization.unserialize, message)
+    if not success or not data then return end
+    
+    -- Handle relay ping
+    if data.type == "relay_ping" then
+        registerRelay(sender, data.relay_name or "GPS Relay")
         
-        drawBox(20, 8, 40, 11, colors.bg)
-        
-        gpu.setForeground(colors.textDim)
-        gpu.set(22, 9, "Available: " .. string.format("%.2f CR", balance))
-        
-        gpu.setForeground(colors.text)
-        local recipient = input("To:     ", 11, false, 20)
-        
-        if recipient == "" or recipient == username then
-            showStatus("✗ Invalid recipient", "error")
-            os.sleep(2)
-            return
+        local response = {
+            type = "server_response",
+            serverName = SERVER_NAME
+        }
+        modem.send(sender, PORT, serialization.serialize(response))
+        drawServerUI()
+        return
+    end
+    
+    -- Handle relay heartbeat
+    if data.type == "relay_heartbeat" then
+        registerRelay(sender, data.relay_name or "GPS Relay")
+        drawServerUI()
+        return
+    end
+    
+    local response = {type = "response"}
+    
+    -- Command routing
+    if data.command == "update_location" then
+        if not data.entityId or not data.x or not data.y or not data.z then
+            response.success = false
+            response.message = "Missing required fields"
+        else
+            updateLocation(
+                data.entityId,
+                data.name or data.entityId,
+                data.x,
+                data.y,
+                data.z,
+                data.dimension,
+                data.entityType,
+                sender
+            )
+            response.success = true
+            response.message = "Location updated"
         end
         
-        local amountStr = input("Amount: ", 13, false, 10)
-        local amount = tonumber(amountStr)
-        
-        if not amount or amount <= 0 then
-            showStatus("✗ Invalid amount", "error")
-            os.sleep(2)
-            return
+    elseif data.command == "get_location" then
+        if not data.entityId then
+            response.success = false
+            response.message = "Entity ID required"
+        else
+            response = getLocation(data.entityId)
         end
         
-        if amount > balance then
-            showStatus("✗ Insufficient funds", "error")
-            os.sleep(2)
-            return
+    elseif data.command == "find_nearby" then
+        if not data.x or not data.y or not data.z then
+            response.success = false
+            response.message = "Position required"
+        else
+            local range = data.range or 100
+            local entities = getEntitiesInRange(data.x, data.y, data.z, range, data.dimension)
+            response.success = true
+            response.entities = entities
+            response.count = #entities
         end
         
-        gpu.setForeground(colors.warning)
-        gpu.set(22, 16, "Confirm transfer?")
-        gpu.set(22, 17, string.format("%.2f CR → %s", amount, recipient))
-        drawButton(30, 19, "CONFIRM [Y]", true)
-        drawButton(44, 19, "CANCEL [N]", false)
+    elseif data.command == "list_all" then
+        local entities = getAllEntities()
+        response.success = true
+        response.entities = entities
+        response.total = #entities
         
-        local _, _, confirmChar = event.pull("key_down")
-        
-        if confirmChar == string.byte('y') or confirmChar == string.byte('Y') or confirmChar == 28 then
-            showStatus("⟳ Processing transfer...", "info")
-            
-            local response = sendAndWait({
-                command = "transfer",
-                username = username,
-                password = password,
-                recipient = recipient,
-                amount = amount
-            }, 10)
-            
-            if not response then
-                showStatus("✗ No response from server (timeout)", "error")
-                os.sleep(3)
-            elseif response.success then
-                balance = response.balance
-                showStatus("✓ Transfer successful! New balance: " .. string.format("%.2f", balance) .. " CR", "success")
-                os.sleep(3)
+    elseif data.command == "get_history" then
+        if not data.entityId then
+            response.success = false
+            response.message = "Entity ID required"
+        else
+            local history = locationHistory[data.entityId]
+            if history then
+                response.success = true
+                response.history = history
             else
-                showStatus("✗ " .. (response.message or "Transfer failed"), "error")
-                os.sleep(3)
+                response.success = false
+                response.message = "No history available"
             end
-        else
-            showStatus("Transfer cancelled", "warning")
-            os.sleep(1)
         end
         
-    elseif char == string.byte('3') then
-        -- List accounts
-        showStatus("⟳ Loading accounts...", "info")
-        
-        local response = sendAndWait({
-            command = "list_accounts"
-        })
-        
-        if response and response.success then
-            clearScreen()
-            drawHeader("◆ ACCOUNT DIRECTORY ◆", "Total: " .. response.total .. " accounts")
-            
-            gpu.setForeground(colors.textDim)
-            gpu.set(10, 6, "USERNAME")
-            gpu.set(50, 6, "STATUS")
-            
-            drawLine(10, 7, 60, "─")
-            
-            local y = 8
-            for i = 1, math.min(15, #response.accounts) do
-                local acc = response.accounts[i]
-                gpu.setForeground(colors.text)
-                gpu.set(10, y, acc.name)
-                
-                if acc.online then
-                    gpu.setForeground(colors.success)
-                    gpu.set(50, y, "● ONLINE")
-                else
-                    gpu.setForeground(colors.textDim)
-                    gpu.set(50, y, "○ offline")
-                end
-                y = y + 1
-            end
-            
-            drawFooter("Press any key to return...")
-            event.pull("key_down")
+    elseif data.command == "remove_entity" then
+        if not data.entityId then
+            response.success = false
+            response.message = "Entity ID required"
         else
-            showStatus("✗ Failed to load accounts", "error")
-            os.sleep(2)
+            if trackedEntities[data.entityId] then
+                trackedEntities[data.entityId] = nil
+                locationHistory[data.entityId] = nil
+                stats.totalEntities = stats.totalEntities - 1
+                saveData()
+                response.success = true
+                response.message = "Entity removed"
+                log("Entity removed: " .. data.entityId, "ADMIN")
+            else
+                response.success = false
+                response.message = "Entity not found"
+            end
+        end
+    end
+    
+    modem.send(sender, PORT, serialization.serialize(response))
+    drawServerUI()
+end
+
+-- Main server loop
+local function main()
+    print("Starting " .. SERVER_NAME .. " Server...")
+    print("Data directory: " .. DATA_DIR)
+    
+    if loadData() then
+        print("Loaded " .. stats.totalEntities .. " tracked entities")
+    end
+    
+    modem.open(PORT)
+    modem.setStrength(400)
+    print("Listening on port " .. PORT)
+    print("Wireless range: 400 blocks")
+    
+    event.listen("modem_message", handleMessage)
+    
+    drawServerUI()
+    
+    log("GPS server started", "SYSTEM")
+    print("GPS Server running!")
+    
+    -- Maintenance timer
+    event.timer(60, function()
+        -- Cleanup old relays
+        local now = computer.uptime()
+        for address, relay in pairs(relays) do
+            if now - relay.lastSeen > 120 then
+                relays[address] = nil
+            end
         end
         
-    elseif char == string.byte('4') then
-        -- Logout
-        showStatus("⟳ Logging out...", "info")
+        -- Mark stale entities (over 1 hour old)
+        local staleCount = 0
+        for id, entity in pairs(trackedEntities) do
+            if os.time() - entity.lastUpdate > 3600 then
+                staleCount = staleCount + 1
+            end
+        end
         
-        sendAndWait({
-            command = "logout",
-            username = username,
-            password = password
-        })
+        stats.relayCount = 0
+        for _ in pairs(relays) do
+            stats.relayCount = stats.relayCount + 1
+        end
         
-        local disconnect = serialization.serialize({
-            type = "client_deregister",
-            tunnelAddress = tunnel.address,
-            tunnelChannel = tunnel.getChannel()
-        })
-        tunnel.send(disconnect)
-        
-        loggedIn = false
-        username = nil
-        password = nil
-        balance = 0
-        
-        showStatus("✓ Logged out successfully", "success")
+        drawServerUI()
+    end, math.huge)
+    
+    while true do
         os.sleep(1)
     end
-end
-
--- Main loop
-local function main()
-    clearScreen()
-    
-    -- Register with relay first
-    while not relayConnected do
-        if not registerWithRelay() then
-            clearScreen()
-            gpu.setForeground(colors.text)
-            gpu.set(2, 10, "Retry connection? (y/n)")
-            local _, _, char = event.pull("key_down")
-            if char ~= string.byte('y') and char ~= string.byte('Y') then
-                return
-            end
-        end
-    end
-    
-    -- Main loop
-    while true do
-        if not loggedIn then
-            local action = welcomeScreen()
-            
-            if action == "login" then
-                loginScreen()
-            elseif action == "exit" then
-                break
-            end
-        else
-            mainMenu()
-        end
-    end
-    
-    clearScreen()
-    gpu.setForeground(colors.success)
-    local msg = "Thank you for using Digital Currency!"
-    local msgX = math.floor((w - unicode.len(msg)) / 2)
-    gpu.set(msgX, 12, msg)
 end
 
 local success, err = pcall(main)
 if not success then
-    clearScreen()
-    gpu.setForeground(colors.error)
     print("Error: " .. tostring(err))
 end
 
--- Final cleanup
-if loggedIn and username then
-    pcall(sendAndWait, {
-        command = "logout",
-        username = username,
-        password = password
-    }, 2)
-end
-
-if relayConnected then
-    local dereg = serialization.serialize({
-        type = "client_deregister",
-        tunnelAddress = tunnel.address,
-        tunnelChannel = tunnel.getChannel()
-    })
-    pcall(tunnel.send, dereg)
-end
+modem.close(PORT)
+print("GPS Server stopped")
