@@ -384,18 +384,27 @@ local function registerRelay(address, relayName)
     end
 end
 
--- Broadcast command to all controllers via relay
-local function broadcastToControllers(command, relayAddress)
+-- Broadcast command to all controllers via ALL relays
+local function broadcastToControllers(command)
     local msg = serialization.serialize(command)
     local encrypted = encryptMessage(msg)
     
-    if relayAddress then
-        modem.send(relayAddress, PORT, encrypted or msg)
-        return true
-    else
-        modem.broadcast(PORT, encrypted or msg)
-        return true
+    -- Send to ALL registered relays
+    local sentCount = 0
+    for relayAddress, relay in pairs(relays) do
+        local now = computer.uptime()
+        if (now - relay.lastSeen) < 120 then  -- Only send to active relays
+            modem.send(relayAddress, PORT, encrypted or msg)
+            sentCount = sentCount + 1
+        end
     end
+    
+    -- Fallback: broadcast if no relays found
+    if sentCount == 0 then
+        modem.broadcast(PORT, encrypted or msg)
+    end
+    
+    return sentCount > 0
 end
 
 -- UI Drawing
@@ -729,7 +738,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                     player = player,
                     scope = "global"
                 }
-                broadcastToControllers(broadcast, sender)
+                broadcastToControllers(broadcast)
                 
                 response.status = "success"
                 log("✓ Added globally: " .. player .. actionUser, "SUCCESS")
@@ -790,7 +799,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                     player = player,
                     scope = "global"
                 }
-                broadcastToControllers(broadcast, sender)
+                broadcastToControllers(broadcast)
                 
                 response.status = "success"
                 log("✓ Removed globally: " .. player .. actionUser, "SUCCESS")
