@@ -1,0 +1,366 @@
+-- GPS Relay (Multi-Client) for OpenComputers 1.7.10
+-- Forwards GPS location data between clients and server
+-- Similar to currency relay but for GPS tracking
+
+local component = require("component")
+local event = require("event")
+local serialization = require("serialization")
+local computer = require("computer")
+local term = require("term")
+
+-- Check for required components
+if not component.isAvailable("modem") then
+    print("ERROR: Wireless Network Card required!")
+    return
+end
+
+local modem = component.modem
+
+-- Get ALL tunnel components (linked cards)
+local tunnels = {}
+for address in component.list("tunnel") do
+    table.insert(tunnels, component.proxy(address))
+    print("Found linked card: " .. address:sub(1, 16))
+end
+
+if #tunnels == 0 then
+    print("ERROR: No Tunnel (Linked Card) found!")
+    return
+end
+
+print("Total linked cards: " .. #tunnels)
+
+-- Configuration
+local PORT = 1001  -- GPS server port
+local RELAY_NAME = "GPS Relay"
+
+-- State
+local serverAddress = nil
+local registeredClients = {}
+local stats = {
+    messagesForwarded = 0,
+    messagesToClient = 0,
+    uptime = 0
+}
+
+-- Logging
+local log = {}
+
+-- Display
+local function updateDisplay()
+    term.clear()
+    print("═══════════════════════════════════════════════════════")
+    print("GPS Relay - " .. RELAY_NAME)
+    print("═══════════════════════════════════════════════════════")
+    print("")
+    print("Mode: MULTI-TUNNEL ←→ WIRELESS GPS")
+    print("  Clients connect via: LINKED CARDS (" .. #tunnels .. " cards)")
+    print("  Server connect via:  WIRELESS")
+    print("")
+    
+    if serverAddress then
+        print("GPS Server: ✓ CONNECTED")
+        print("  Address: " .. serverAddress:sub(1, 16))
+    else
+        print("GPS Server: ✗ SEARCHING...")
+    end
+    
+    print("")
+    print("Linked Cards:")
+    for i, tunnel in ipairs(tunnels) do
+        print("  [" .. i .. "] " .. tunnel.getChannel():sub(1, 24))
+    end
+    
+    print("")
+    print("Wireless Port: " .. PORT)
+    print("Messages Forwarded: " .. stats.messagesForwarded)
+    print("Messages to Clients: " .. stats.messagesToClient)
+    print("Registered Clients: " .. (function() local c=0; for _ in pairs(registeredClients) do c=c+1 end return c end)())
+    print("")
+    print("═══════════════════════════════════════════════════════")
+    print("ACTIVITY LOG:")
+    print("═══════════════════════════════════════════════════════")
+    
+    for i = 1, math.min(10, #log) do
+        local entry = log[i]
+        if entry.category == "SUCCESS" then
+            io.write("\27[32m")
+        elseif entry.category == "ERROR" then
+            io.write("\27[31m")
+        elseif entry.category == "CLIENT" then
+            io.write("\27[36m")
+        elseif entry.category == "SERVER" then
+            io.write("\27[33m")
+        end
+        
+        print("[" .. entry.time .. "] " .. entry.message)
+        io.write("\27[0m")
+    end
+end
+
+local function addToLog(message, category)
+    category = category or "INFO"
+    local entry = {
+        time = os.date("%H:%M:%S"),
+        category = category,
+        message = message
+    }
+    table.insert(log, 1, entry)
+    if #log > 20 then
+        table.remove(log)
+    end
+    updateDisplay()
+end
+
+-- Server discovery
+local function findServer()
+    if serverAddress then return true end
+    
+    addToLog("Searching for GPS server...", "SEARCH")
+    
+    local ping = serialization.serialize({
+        type = "relay_ping",
+        relay_name = RELAY_NAME
+    })
+    
+    modem.broadcast(PORT, ping)
+    
+    local deadline = computer.uptime() + 3
+    while computer.uptime() < deadline do
+        local eventData = {event.pull(0.5, "modem_message")}
+        if eventData[1] then
+            local _, _, sender, port, _, message = table.unpack(eventData)
+            if port == PORT then
+                local success, data = pcall(serialization.unserialize, message)
+                if success and data and data.type == "server_response" then
+                    serverAddress = sender
+                    addToLog("GPS Server found: " .. sender:sub(1, 8), "SUCCESS")
+                    return true
+                end
+            end
+        end
+    end
+    
+    addToLog("GPS Server not found", "ERROR")
+    return false
+end
+
+-- Server heartbeat
+local function serverHeartbeat()
+    while true do
+        os.sleep(30)
+        
+        if serverAddress then
+            local clientCount = 0
+            for _ in pairs(registeredClients) do
+                clientCount = clientCount + 1
+            end
+            
+            local heartbeat = serialization.serialize({
+                type = "relay_heartbeat",
+                relay_name = RELAY_NAME,
+                clients = clientCount
+            })
+            
+            modem.send(serverAddress, PORT, heartbeat)
+            addToLog("Heartbeat sent (" .. clientCount .. " clients)", "SERVER")
+        else
+            findServer()
+        end
+    end
+end
+
+-- Check if message is from tunnel
+local function isTunnelMessage(sender, port, distance)
+    if port ~= 0 and distance ~= nil and distance ~= math.huge then
+        return false, nil
+    end
+    return true, nil
+end
+
+-- Unified message handler
+local function handleMessage(eventType, _, sender, port, distance, message)
+    local isTunnel, sourceTunnel = isTunnelMessage(sender, port, distance)
+    
+    if isTunnel then
+        -- FROM CLIENT (via tunnel)
+        addToLog("← CLIENT via tunnel", "CLIENT")
+        
+        local success, data = pcall(serialization.unserialize, message)
+        
+        if not success or not data then
+            addToLog("ERROR: Failed to parse message", "ERROR")
+            return
+        end
+        
+        -- Find source tunnel
+        local sourceTunnel = nil
+        
+        if data.tunnelAddress then
+            local clientTunnelAddr = data.tunnelAddress
+            
+            if data.tunnelChannel then
+                for i, tunnel in ipairs(tunnels) do
+                    if tunnel.getChannel() == data.tunnelChannel then
+                        sourceTunnel = tunnel
+                        break
+                    end
+                end
+            end
+        end
+        
+        if not sourceTunnel and data.tunnelAddress then
+            local client = registeredClients[data.tunnelAddress]
+            if client then
+                sourceTunnel = client.tunnel
+            end
+        end
+        
+        if not sourceTunnel and #tunnels == 1 then
+            sourceTunnel = tunnels[1]
+        end
+        
+        if not sourceTunnel then
+            addToLog("ERROR: Cannot determine source tunnel!", "ERROR")
+            return
+        end
+        
+        -- Handle client registration
+        if data.type == "client_register" then
+            local clientTunnelAddr = data.tunnelAddress or data.clientId or sender
+            local clientId = clientTunnelAddr
+            
+            registeredClients[clientId] = {
+                tunnel = sourceTunnel,
+                clientTunnelAddress = clientTunnelAddr,
+                relayTunnelAddress = sourceTunnel.address,
+                lastSeen = os.time()
+            }
+            
+            addToLog("GPS CLIENT REGISTERED: " .. clientId:sub(1, 8), "SUCCESS")
+            
+            local ack = {
+                type = "relay_ack",
+                relay_name = RELAY_NAME,
+                server_connected = serverAddress ~= nil
+            }
+            
+            pcall(sourceTunnel.send, serialization.serialize(ack))
+            updateDisplay()
+            return
+        end
+        
+        -- Handle client deregistration
+        if data.type == "client_deregister" or data.type == "client_disconnect" then
+            local clientId = data.tunnelAddress or data.clientId or sender
+            registeredClients[clientId] = nil
+            addToLog("GPS CLIENT DISCONNECTED: " .. clientId:sub(1, 8), "CLIENT")
+            updateDisplay()
+            return
+        end
+        
+        -- Forward to server
+        if not serverAddress then
+            if not findServer() then
+                local errorMsg = serialization.serialize({
+                    type = "response",
+                    success = false,
+                    message = "Relay cannot reach GPS server"
+                })
+                pcall(sourceTunnel.send, errorMsg)
+                return
+            end
+        end
+        
+        addToLog("→ GPS SERVER: Forwarding", "SERVER")
+        local sendOk = pcall(modem.send, serverAddress, PORT, message)
+        if sendOk then
+            stats.messagesForwarded = stats.messagesForwarded + 1
+            registeredClients["_last_sender"] = sourceTunnel
+        end
+        
+    else
+        -- FROM SERVER (via wireless)
+        if port ~= PORT then return end
+        
+        addToLog("← GPS SERVER (Wireless)", "SERVER")
+        
+        if sender == serverAddress then
+            local targetTunnel = registeredClients["_last_sender"]
+            
+            if targetTunnel then
+                addToLog("→ CLIENT: Forwarding via tunnel", "CLIENT")
+                local sendOk = pcall(targetTunnel.send, message)
+                if sendOk then
+                    stats.messagesToClient = stats.messagesToClient + 1
+                end
+            end
+        else
+            local success, data = pcall(serialization.unserialize, message)
+            if success and data and data.type == "server_response" then
+                serverAddress = sender
+                addToLog("GPS SERVER IDENTIFIED: " .. sender:sub(1, 8), "SUCCESS")
+            end
+        end
+    end
+    
+    updateDisplay()
+end
+
+-- Main
+local function main()
+    print("Starting GPS Relay...")
+    print("Relay Name: " .. RELAY_NAME)
+    print("")
+    
+    modem.open(PORT)
+    modem.setStrength(400)
+    print("Wireless port " .. PORT .. " opened (range: 400)")
+    
+    print("")
+    print("Linked Cards Installed:")
+    for i, tunnel in ipairs(tunnels) do
+        print("  [" .. i .. "] Channel: " .. tunnel.getChannel())
+    end
+    print("")
+    
+    if findServer() then
+        print("✓ GPS Server found!")
+    else
+        print("✗ GPS Server not found - will keep trying")
+    end
+    
+    print("")
+    print("GPS Relay running!")
+    print("")
+    
+    event.timer(1, serverHeartbeat)
+    event.listen("modem_message", handleMessage)
+    
+    updateDisplay()
+    addToLog("GPS relay started (" .. #tunnels .. " cards)", "SUCCESS")
+    
+    while true do
+        os.sleep(1)
+        stats.uptime = stats.uptime + 1
+        
+        local now = os.time()
+        for clientId, client in pairs(registeredClients) do
+            if clientId ~= "_last_sender" and client.lastSeen then
+                if now - client.lastSeen > 300 then
+                    registeredClients[clientId] = nil
+                    addToLog("Client timeout: " .. clientId:sub(1, 8), "CLIENT")
+                end
+            end
+        end
+    end
+end
+
+local success, err = pcall(main)
+if not success then
+    print("Error: " .. tostring(err))
+end
+
+event.ignore("modem_message", handleMessage)
+modem.close(PORT)
+print("GPS Relay stopped")
