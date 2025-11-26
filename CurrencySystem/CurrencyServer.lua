@@ -18,7 +18,7 @@ local DATA_DIR = "/home/currency/"
 local CONFIG_FILE = DATA_DIR .. "admin.cfg"
 
 -- Default admin password (will be hashed)
-local DEFAULT_ADMIN_PASSWORD = "admin123"
+local DEFAULT_ADMIN_PASSWORD = "ECU2025"
 
 -- Network components
 local modem = component.modem
