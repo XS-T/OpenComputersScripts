@@ -1174,6 +1174,17 @@ local function lockAccount(username, reason)
     return true, "Account locked"
 end
 
+local function waitForYesNo()
+    while true do
+        local eventType, _, char, code = event.pull("key_down")
+        -- Check both char byte value AND key code
+        if char == string.byte('y') or char == string.byte('Y') or code == 21 then  -- Y
+            return true
+        elseif char == string.byte('n') or char == string.byte('N') or code == 49 then  -- N
+            return false
+        end
+    end
+end
 
 local function drawBox(x, y, width, height, color)
     gpu.setBackground(color or colors.bg)
@@ -1997,7 +2008,7 @@ local function adminViewPendingLoansUI()
                     gpu.set(17, 16, "Approve this loan? (Y/N)")
                     
                     local _, _, confirmChar = event.pull("key_down")
-                    if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
+                    if waitForYesNo() then
                         local adminUsername = "ServerAdmin"
                         for username, session in pairs(activeSessions) do
                             local acc = getAccount(username)
@@ -2055,7 +2066,7 @@ local function adminViewPendingLoansUI()
                     gpu.set(17, 18, "Deny this loan? (Y/N)")
                     
                     local _, _, confirmChar = event.pull("key_down")
-                    if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
+                    if waitForYesNo() then
                         local adminUsername = "ServerAdmin"
                         for username, session in pairs(activeSessions) do
                             local acc = getAccount(username)
@@ -2183,6 +2194,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         end
         local relayAddress = sender
         local response = {type = "response"}
+        local requestUsername = data.username
     if data.command == "login" then
         if not verifyPassword(data.username, data.password) then
             response.success = false
@@ -2673,6 +2685,9 @@ elseif data.command == "apply_loan" then
             response.message = "Logged out successfully"
         end
     end
+    if requestUsername and not response.username then
+        response.username = requestUsername
+    end        
     local serializedResponse = serialization.serialize(response)
     if not serializedResponse then
         -- Serialization failed - create fallback
