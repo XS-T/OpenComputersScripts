@@ -2153,7 +2153,8 @@ local function adminViewPendingLoansUI()
                     gpu.set(17, 14, "Amount: " .. string.format("%.2f CR", app.amount))
                     
                     gpu.setForeground(colors.text)
-                    local reason = input("Reason:     ", 16, false, 30)
+                    --local reason = input("Reason:     ", 16, false, 30)
+                    local reason = "Contact Admin"
                     
                     gpu.setForeground(colors.warning)
                     gpu.set(17, 18, "Deny this loan? (Y/N)")
