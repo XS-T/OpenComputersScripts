@@ -2182,6 +2182,237 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                 response.message = msg
             end
         end
+    elseif data.command == "admin_create_account" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                local ok, msg = createAccount(data.newUsername, data.newPassword, data.initialBalance or 100, relayAddress)
+                response.success = ok
+                response.message = msg
+            end
+        end
+    elseif data.command == "admin_delete_account" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                local ok, msg = deleteAccount(data.targetUsername)
+                response.success = ok
+                response.message = msg
+            end
+        end
+    elseif data.command == "admin_set_balance" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                local targetAcc = getAccount(data.targetUsername)
+                if targetAcc then
+                    targetAcc.balance = data.newBalance
+                    saveAccounts()
+                    log(string.format("ADMIN: Balance set for %s: %.2f CR by %s", data.targetUsername, data.newBalance, data.username), "ADMIN")
+                    response.success = true
+                    response.message = "Balance updated"
+                else
+                    response.success = false
+                    response.message = "Account not found"
+                end
+            end
+        end
+    elseif data.command == "admin_lock_account" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                local ok, msg = lockAccount(data.targetUsername, "Locked by admin: " .. data.username)
+                response.success = ok
+                response.message = msg
+            end
+        end
+    elseif data.command == "admin_unlock_account" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                local ok, msg = adminUnlockAccount(data.targetUsername)
+                response.success = ok
+                response.message = msg
+            end
+        end
+    elseif data.command == "admin_reset_password" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                local ok, msg = adminResetPassword(data.targetUsername, data.newPassword)
+                response.success = ok
+                response.message = msg
+            end
+        end
+    elseif data.command == "admin_view_accounts" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                response.success = true
+                response.accounts = {}
+                for _, account in ipairs(accounts) do
+                    table.insert(response.accounts, {
+                        name = account.name,
+                        balance = account.balance,
+                        online = account.online or false,
+                        locked = account.locked or false,
+                        created = account.created,
+                        isAdmin = account.isAdmin or false
+                    })
+                end
+            end
+        end
+    elseif data.command == "admin_toggle_admin" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                local ok, msg = adminToggleAdminStatus(data.targetUsername)
+                response.success = ok
+                response.message = msg
+            end
+        end
+    elseif data.command == "admin_view_loans" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                response.success = true
+                response.loans = adminViewAllLoans()
+            end
+        end
+    elseif data.command == "admin_view_locked" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                response.success = true
+                response.lockedAccounts = adminViewLockedAccounts()
+            end
+        end
+    elseif data.command == "admin_forgive_loan" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                local ok, msg = adminForgiveLoan(data.loanId)
+                response.success = ok
+                response.message = msg
+            end
+        end
+    elseif data.command == "admin_adjust_credit" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                local ok, msg = adminAdjustCredit(data.targetUsername, data.newScore, data.reason)
+                response.success = ok
+                response.message = msg
+            end
+        end
     elseif data.command == "list_accounts" then
         response.success = true
         response.accounts = {}
