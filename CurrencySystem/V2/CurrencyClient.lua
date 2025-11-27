@@ -711,8 +711,7 @@ local function viewPendingLoansUI()
         gpu.setForeground(colors.textDim)
         gpu.set(12, 10, "Credit Score: ")
         gpu.setForeground(ratingColor)
-        local message = app.creditScore .. " (" .. app.creditRating .. ")"
-        gpu.set(26, 10, message)
+        gpu.set(26, 10, app.creditScore .. " (" .. app.creditRating .. ")")
         
         gpu.setForeground(colors.textDim)
         gpu.set(12, 12, "Amount Requested:")
