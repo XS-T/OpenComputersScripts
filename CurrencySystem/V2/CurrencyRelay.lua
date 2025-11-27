@@ -149,24 +149,24 @@ updateDisplay = function()
     end
 end
 
--- Encryption
+-- Encryption key (must match server)
+local SERVER_NAME = "Empire Credit Union"
+local ENCRYPTION_KEY = data.md5(SERVER_NAME .. "RelaySecure2024")
+
+-- Relay encryption functions
 local function encryptMessage(plaintext)
-    if not plaintext or plaintext=="" then return nil end
+    if not plaintext or plaintext == "" then
+        return nil
+    end
     local iv = data.random(16)
     local encrypted = data.encrypt(plaintext, ENCRYPTION_KEY, iv)
-    return data.encode64(iv..encrypted)
+    return data.encode64(iv .. encrypted)
 end
 
 local function decryptMessage(ciphertext)
-    if not ciphertext or ciphertext=="" then return nil end
-    local success, result = pcall(function()
-        local combined = data.decode64(ciphertext)
-        local iv = combined:sub(1,16)
-        local encrypted = combined:sub(17)
-        return data.decrypt(encrypted, ENCRYPTION_KEY, iv)
-    end)
-    if success then return result else return nil end
-end
+    if not ciphertext or ciphertext == "" then
+        return nil
+    end
 
 -- Server discovery
 local function findServer()
