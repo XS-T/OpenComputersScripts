@@ -47,65 +47,6 @@ local function writeLogToFile(entry)
     end
 end
 
-
--- Display
-local function updateDisplay()
-    term.clear()
-    print("═══════════════════════════════════════════════════════")
-    print("Currency Relay - " .. RELAY_NAME)
-    print("═══════════════════════════════════════════════════════")
-    print("")
-    print("Mode: MULTI-TUNNEL ←→ WIRELESS (ENCRYPTED + THREADED + DEBUG)")
-    print("Clients via: LINKED CARDS (" .. #tunnels .. " cards)")
-    print("Server via:  WIRELESS + AES ENCRYPTION")
-    print("")
-    
-    if serverAddress then
-        print("Server: ✓ CONNECTED (Encrypted)")
-        print("Address: " .. serverAddress:sub(1,16))
-    else
-        print("Server: ✗ SEARCHING...")
-    end
-    
-    print("")
-    print("Linked Cards:")
-    for i, tunnel in ipairs(tunnels) do
-        local ok, ch = pcall(tunnel.getChannel, tunnel)
-        print(" [" .. i .. "] Channel: " .. (ok and tostring(ch) or "(unknown)") .. " Address: " .. tunnel.address)
-    end
-    
-    print("")
-    print("Wireless Port: " .. PORT)
-    print("Messages Forwarded: " .. stats.messagesForwarded)
-    print("Messages to Clients: " .. stats.messagesToClient)
-    print("Active Threads: " .. stats.activeThreads)
-    print("Total Messages: " .. stats.totalMessages)
-    print("Registered Clients: " .. (function() local c=0; for _ in pairs(registeredClients) do c=c+1 end return c end)())
-    print("═══════════════════════════════════════════════════════")
-    print("ACTIVITY LOG (last 10 entries):")
-    for i=1, math.min(10,#log) do
-        local e = log[i]
-        print("[" .. e.time .. "][" .. e.category .. "] " .. e.message)
-    end
-end
-
-local function addToLog(message, category)
-    category = category or "INFO"
-    local entry = {
-        time = os.date("%H:%M:%S"),
-        category = category,
-        message = message
-    }
-    table.insert(log, 1, entry)
-    if #log > 200 then
-        for i = 201, #log do log[i] = nil end
-    end
-    writeLogToFile(entry)
-    if DEBUG or category ~= "DEBUG" then
-        updateDisplay()
-    end
-end
-
 -- Encryption functions
 local function encryptMessage(plaintext)
     if not plaintext or plaintext == "" then return nil end
@@ -148,6 +89,66 @@ local stats = {
     activeThreads = 0,
     totalMessages = 0
 }
+
+-- Display
+local function updateDisplay()
+    term.clear()
+    print("═══════════════════════════════════════════════════════")
+    print("Currency Relay - " .. RELAY_NAME)
+    print("═══════════════════════════════════════════════════════")
+    print("")
+    print("Mode: MULTI-TUNNEL ←→ WIRELESS (ENCRYPTED + THREADED + DEBUG)")
+    print("Clients via: LINKED CARDS (" .. #tunnels .. " cards)")
+    print("Server via:  WIRELESS + AES ENCRYPTION")
+    print("")
+    
+    if serverAddress then
+        print("Server: ✓ CONNECTED (Encrypted)")
+        print("Address: " .. serverAddress:sub(1,16))
+    else
+        print("Server: ✗ SEARCHING...")
+    end
+    
+    print("")
+    print("Linked Cards:")
+    for i, tunnel in ipairs(tunnels) do
+        local ok, ch = pcall(tunnel.getChannel, tunnel)
+        print(" [" .. i .. "] Channel: " .. (ok and tostring(ch) or "(unknown)") .. " Address: " .. tunnel.address)
+    end
+    
+    print("")
+    print("Wireless Port: " .. PORT)
+    print("Messages Forwarded: " .. stats.messagesForwarded)
+    print("Messages to Clients: " .. stats.messagesToClient)
+    print("Active Threads: " .. stats.activeThreads)
+    print("Total Messages: " .. stats.totalMessages)
+    print("Registered Clients: " .. (function() local c=0; for _ in pairs(registeredClients) do c=c+1 end return c end)())
+    print("═══════════════════════════════════════════════════════")
+    print("ACTIVITY LOG (last 10 entries):")
+    for i=1, math.min(10,#log) do
+        local e = log[i]
+        print("[" .. e.time .. "][" .. e.category .. "] " .. e.message)
+    end
+end
+
+
+local function addToLog(message, category)
+    category = category or "INFO"
+    local entry = {
+        time = os.date("%H:%M:%S"),
+        category = category,
+        message = message
+    }
+    table.insert(log, 1, entry)
+    if #log > 200 then
+        for i = 201, #log do log[i] = nil end
+    end
+    writeLogToFile(entry)
+    if DEBUG or category ~= "DEBUG" then
+        updateDisplay()
+    end
+end
+
 -- Server discovery
 local function findServer()
     if serverAddress then return true end
