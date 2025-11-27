@@ -47,8 +47,8 @@ local modem = component.modem
 local data = component.data
 
 -- Encryption key for relay communication (must match relay)
-local RELAY_ENCRYPTION_KEY_BASE = "e2x36U7W0ZmUVjWH"
---local RELAY_ENCRYPTION_KEY = RELAY_ENCRYPTION_KEY_BASE .. string.rep("\0", 32 - #RELAY_ENCRYPTION_KEY_BASE)
+local RELAY_ENCRYPTION_KEY_BASE = "ad4915be95e00d12801aeceede75bb6b"
+local RELAY_ENCRYPTION_KEY = RELAY_ENCRYPTION_KEY_BASE --.. string.rep("\0", 32 - #RELAY_ENCRYPTION_KEY_BASE)
 
 -- Relay encryption functions
 local function encryptRelayMessage(message)
