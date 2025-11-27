@@ -51,32 +51,32 @@ local RELAY_ENCRYPTION_KEY_BASE = "ad4915be95e00d12801aeceede75bb6b"
 local RELAY_ENCRYPTION_KEY = RELAY_ENCRYPTION_KEY_BASE --.. string.rep("\0", 32 - #RELAY_ENCRYPTION_KEY_BASE)
 
 -- Relay encryption functions
-local function encryptRelayMessage(message)
-    -- Generate random 16-byte IV (128 bits)
-    local iv = ""
-    for i = 1, 16 do
-        iv = iv .. string.char(math.random(0, 255))
-    end
-    -- Encrypt using AES-256
-    local encrypted = data.encrypt(message, RELAY_ENCRYPTION_KEY, iv)
-    -- Prepend IV to encrypted data
-    return iv .. encrypted
-end
-
-local function decryptRelayMessage(encryptedData)
-    if not encryptedData or #encryptedData < 16 then
+local function encryptRelayMessage(plaintext)
+    if not plaintext or plaintext == "" then
         return nil
     end
-    -- Extract IV (first 16 bytes)
-    local iv = encryptedData:sub(1, 16)
-    -- Extract encrypted content (rest)
-    local encrypted = encryptedData:sub(17)
-    -- Decrypt
-    local success, decrypted = pcall(data.decrypt, encrypted, RELAY_ENCRYPTION_KEY, iv)
-    if success then
-        return decrypted
+    local iv = data.random(16)
+    local encrypted = data.encrypt(plaintext, ENCRYPTION_KEY, iv)
+    return data.encode64(iv .. encrypted)
+end
+
+local function decryptRelayMessage(ciphertext)
+    if not ciphertext or ciphertext == "" then
+        return nil
     end
-    return nil
+    
+    local success, result = pcall(function()
+        local combined = data.decode64(ciphertext)
+        local iv = combined:sub(1, 16)
+        local encrypted = combined:sub(17)
+        return data.decrypt(encrypted, ENCRYPTION_KEY, iv)
+    end)
+    
+    if success then
+        return result
+    else
+        return nil
+    end
 end
 
 local accounts = {}
