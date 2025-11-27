@@ -69,7 +69,7 @@ local function decryptRelayMessage(ciphertext)
         local combined = data.decode64(ciphertext)
         local iv = combined:sub(1, 16)
         local encrypted = combined:sub(17)
-        return data.decrypt(encrypted, ENCRYPTION_KEY, iv)
+        return data.decrypt(encrypted, RELAY_ENCRYPTION_KEY, iv)
     end)
     
     if success then
@@ -186,7 +186,7 @@ local function detectRAID()
     end
 end
 
-local ENCRYPTION_KEY = data.md5(SERVER_NAME .. "BankingSecurity2024")
+local DATA_ENCRYPTION_KEY = data.md5(SERVER_NAME .. "BankingSecurity2024")
 
 local function hashPassword(password)
     if not password or password == "" then return nil end
@@ -196,7 +196,7 @@ end
 local function encryptData(plaintext)
     if not plaintext or plaintext == "" then return nil end
     local iv = data.random(16)
-    local encrypted = data.encrypt(plaintext, ENCRYPTION_KEY, iv)
+    local encrypted = data.encrypt(plaintext, DATA_ENCRYPTION_KEY, iv)
     return data.encode64(iv .. encrypted)
 end
 
@@ -206,7 +206,7 @@ local function decryptData(ciphertext)
         local combined = data.decode64(ciphertext)
         local iv = combined:sub(1, 16)
         local encrypted = combined:sub(17)
-        return data.decrypt(encrypted, ENCRYPTION_KEY, iv)
+        return data.decrypt(encrypted, DATA_ENCRYPTION_KEY, iv)
     end)
     if success then return result else return nil end
 end
