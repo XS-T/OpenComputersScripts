@@ -1,4 +1,5 @@
 -- Digital Currency Client with Loans for OpenComputers 1.7.10
+-- FIXED VERSION - All nil response checks added
 -- Connects via TUNNEL (linked card)
 
 local component = require("component")
@@ -275,18 +276,26 @@ local function loginScreen()
     local pass = input("Password: ", 12, true, 20)
     showStatus("⟳ Authenticating...", "info")
     local response = sendAndWait({command = "login", username = user, password = pass})
-    if response and response.success then
+    
+    -- ⭐ FIX: Check if response exists
+    if not response then
+        showStatus("✗ No response from server", "error")
+        os.sleep(2)
+        return false
+    end
+    
+    if response.success then
         username = user
         password = pass
-        balance = response.balance
-        creditScore = response.creditScore
-        creditRating = response.creditRating
-        isAdmin = response.isAdmin or false  -- For UI display only
+        balance = response.balance or 0
+        creditScore = response.creditScore or 650
+        creditRating = response.creditRating or "UNKNOWN"
+        isAdmin = response.isAdmin or false
         loggedIn = true
         showStatus("✓ Login successful!" .. (isAdmin and " (ADMIN)" or ""), "success")
         os.sleep(1)
         return true
-    elseif response and response.locked then
+    elseif response.locked then
         clearScreen()
         drawHeader("◆ ACCOUNT LOCKED ◆")
         drawBox(10, 8, 60, 12, colors.bg)
@@ -307,11 +316,8 @@ local function loginScreen()
         username = nil
         password = nil
         return false
-    elseif response then
-        showStatus("✗ " .. (response.message or "Login failed"), "error")
-        os.sleep(2)
     else
-        showStatus("✗ No response from server", "error")
+        showStatus("✗ " .. (response.message or "Login failed"), "error")
         os.sleep(2)
     end
     return false
@@ -329,17 +335,27 @@ local function viewCreditScore()
     drawHeader("◆ CREDIT SCORE ◆", username)
     showStatus("⟳ Loading credit information...", "info")
     local response = sendAndWait({command = "get_credit_score", username = username, password = password})
-    if response and response.success then
+    
+    -- ⭐ FIX: Check if response exists
+    if not response then
+        showStatus("✗ No response from server", "error")
+        centerText(21, "Press Enter to continue")
+        drawFooter("Connection Error")
+        io.read()
+        return
+    end
+    
+    if response.success then
         clearScreen()
         drawHeader("◆ CREDIT SCORE ◆", username)
         drawBox(15, 6, 50, 15, colors.bg)
         gpu.setForeground(colors.textDim)
         centerText(7, "Your Credit Score")
-        local scoreColor = getCreditScoreColor(response.score)
+        local scoreColor = getCreditScoreColor(response.score or 0)
         gpu.setForeground(scoreColor)
-        centerText(9, tostring(response.score))
+        centerText(9, tostring(response.score or 0))
         gpu.setForeground(colors.text)
-        centerText(11, "Rating: " .. response.rating)
+        centerText(11, "Rating: " .. (response.rating or "UNKNOWN"))
         gpu.setForeground(colors.textDim)
         centerText(13, "━━━━━━━━━━━━━━━━━━━━━━━━━━")
         gpu.setForeground(colors.text)
@@ -371,16 +387,42 @@ local function checkLoanEligibility()
     drawHeader("◆ LOAN ELIGIBILITY ◆", username)
     showStatus("⟳ Checking eligibility...", "info")
     local response = sendAndWait({command = "get_loan_eligibility", username = username, password = password})
-    if response and response.success then
+    
+    -- ⭐ FIX: Check if response exists
+    if not response then
+        clearScreen()
+        drawHeader("◆ CONNECTION ERROR ◆", username)
+        drawBox(20, 10, 40, 6, colors.bg)
+        gpu.setForeground(colors.error)
+        centerText(12, "✗ Server Not Responding")
+        gpu.setForeground(colors.textDim)
+        centerText(14, "Please check your connection")
+        centerText(16, "Press Enter to continue")
+        drawFooter("Connection Error")
+        io.read()
+        return
+    end
+    
+    if response.success then
         clearScreen()
         drawHeader("◆ LOAN ELIGIBILITY ◆", username)
         drawBox(10, 6, 60, 14, colors.bg)
         gpu.setForeground(colors.text)
-        gpu.set(12, 7, "Credit Score: " .. response.creditScore .. " (" .. response.creditRating .. ")")
-        gpu.set(12, 9, "Maximum Loan Amount: " .. string.format("%.2f CR", response.maxLoan))
-        gpu.set(12, 10, "Interest Rate: " .. string.format("%.1f%%", response.interestRate * 100))
-        gpu.set(12, 12, "Active Loans: " .. response.activeLoans)
-        gpu.set(12, 13, "Total Owed: " .. string.format("%.2f CR", response.totalOwed))
+        
+        -- ⭐ FIX: Use defaults for potentially missing fields
+        local creditScore = response.creditScore or 0
+        local creditRating = response.creditRating or "UNKNOWN"
+        local maxLoan = response.maxLoan or 0
+        local interestRate = response.interestRate or 0
+        local activeLoans = response.activeLoans or 0
+        local totalOwed = response.totalOwed or 0
+        
+        gpu.set(12, 7, "Credit Score: " .. creditScore .. " (" .. creditRating .. ")")
+        gpu.set(12, 9, "Maximum Loan Amount: " .. string.format("%.2f CR", maxLoan))
+        gpu.set(12, 10, "Interest Rate: " .. string.format("%.1f%%", interestRate * 100))
+        gpu.set(12, 12, "Active Loans: " .. activeLoans)
+        gpu.set(12, 13, "Total Owed: " .. string.format("%.2f CR", totalOwed))
+        
         if response.eligible then
             gpu.setForeground(colors.success)
             centerText(16, "✓ You are eligible for loans")
@@ -401,11 +443,20 @@ local function applyForLoan()
     drawHeader("◆ APPLY FOR LOAN ◆", username)
     showStatus("⟳ Checking eligibility...", "info")
     local eligResponse = sendAndWait({command = "get_loan_eligibility", username = username, password = password})
-    if not eligResponse or not eligResponse.success then
+    
+    -- ⭐ FIX: Check if eligResponse exists
+    if not eligResponse then
+        showStatus("✗ No response from server", "error")
+        os.sleep(2)
+        return
+    end
+    
+    if not eligResponse.success then
         showStatus("✗ Failed to check eligibility", "error")
         os.sleep(2)
         return
     end
+    
     if not eligResponse.eligible then
         clearScreen()
         drawHeader("◆ NOT ELIGIBLE ◆", username)
@@ -419,62 +470,86 @@ local function applyForLoan()
         io.read()
         return
     end
+    
     clearScreen()
     drawHeader("◆ APPLY FOR LOAN ◆", username)
     drawBox(15, 6, 50, 13, colors.bg)
     gpu.setForeground(colors.text)
-    gpu.set(17, 7, "Max Loan: " .. string.format("%.2f CR", eligResponse.maxLoan))
-    gpu.set(17, 8, "Rate: " .. string.format("%.1f%%", eligResponse.interestRate * 100))
+    gpu.set(17, 7, "Max Loan: " .. string.format("%.2f CR", eligResponse.maxLoan or 0))
+    gpu.set(17, 8, "Rate: " .. string.format("%.1f%%", (eligResponse.interestRate or 0) * 100))
+    
     local amountStr = input("Amount:     ", 10, false, 15)
     local amount = tonumber(amountStr)
+    
     if not amount or amount <= 0 then
         showStatus("✗ Invalid amount", "error")
         os.sleep(2)
         return
     end
-    if amount > eligResponse.maxLoan then
+    
+    if amount > (eligResponse.maxLoan or 0) then
         showStatus("✗ Amount exceeds maximum", "error")
         os.sleep(2)
         return
     end
+    
     local termStr = input("Term (days):", 12, false, 5)
     local term = tonumber(termStr)
+    
     if not term or term < 1 or term > 30 then
         showStatus("✗ Invalid term (1-30 days)", "error")
         os.sleep(2)
         return
     end
-    local interest = amount * eligResponse.interestRate
+    
+    local interest = amount * (eligResponse.interestRate or 0)
     local total = amount + interest
+    
     gpu.setForeground(colors.textDim)
     gpu.set(17, 14, "Interest: " .. string.format("%.2f CR", interest))
     gpu.set(17, 15, "Total Owed: " .. string.format("%.2f CR", total))
+    
     gpu.setForeground(colors.warning)
     centerText(17, "Confirm? (Y/N)")
+    
     local _, _, char = event.pull("key_down")
     if char ~= string.byte('y') and char ~= string.byte('Y') then
         showStatus("✗ Cancelled", "warning")
         os.sleep(1)
         return
     end
+    
     showStatus("⟳ Processing loan application...", "info")
     local response = sendAndWait({command = "apply_loan", username = username, password = password, amount = amount, term = term})
+    
+    -- ⭐ FIX: Check if response exists
+    if not response then
+        showStatus("✗ No response from server", "error")
+        os.sleep(2)
+        return
+    end
+    
     if response.success then
         clearScreen()
         drawHeader("◆ LOAN APPLICATION SUBMITTED ◆", username)
         drawBox(15, 8, 50, 10, colors.bg)
+        
         gpu.setForeground(colors.success)
         centerText(10, "✓ Application Submitted!")
+        
         gpu.setForeground(colors.text)
-        centerText(12, "Application ID: " .. response.pendingId)
+        local pendingId = response.pendingId or "UNKNOWN"
+        centerText(12, "Application ID: " .. pendingId)
+        
         gpu.setForeground(colors.textDim)
         centerText(14, "Your loan is pending admin approval")
         centerText(15, "You will be notified when processed")
         centerText(17, "Press Enter to continue")
+        
         drawFooter("Loan Application • Pending")
         io.read()
     else
-        showStatus("✗ " .. (response and response.message or "Application failed"), "error")
+        showStatus("✗ " .. (response.message or "Application failed"), "error")
         os.sleep(2)
     end
 end
@@ -484,7 +559,17 @@ local function viewMyLoans()
     drawHeader("◆ MY LOANS ◆", username)
     showStatus("⟳ Loading loans...", "info")
     local response = sendAndWait({command = "get_my_loans", username = username, password = password})
-    if response and response.success then
+    
+    -- ⭐ FIX: Check if response exists
+    if not response then
+        showStatus("✗ No response from server", "error")
+        centerText(22, "Press Enter to continue")
+        drawFooter("Connection Error")
+        io.read()
+        return
+    end
+    
+    if response.success then
         clearScreen()
         drawHeader("◆ MY LOANS ◆", username)
         if #response.loans == 0 then
@@ -526,7 +611,22 @@ local function makePayment()
     drawHeader("◆ MAKE PAYMENT ◆", username)
     showStatus("⟳ Loading loans...", "info")
     local loansResponse = sendAndWait({command = "get_my_loans", username = username, password = password})
-    if not loansResponse or not loansResponse.success or #loansResponse.loans == 0 then
+    
+    -- ⭐ FIX: Check if loansResponse exists
+    if not loansResponse then
+        showStatus("✗ No response from server", "error")
+        clearScreen()
+        drawHeader("◆ MAKE PAYMENT ◆", username)
+        drawBox(20, 10, 40, 5, colors.bg)
+        gpu.setForeground(colors.error)
+        centerText(12, "Connection error")
+        centerText(14, "Press Enter to continue")
+        drawFooter("Connection Error")
+        io.read()
+        return
+    end
+    
+    if not loansResponse.success or #loansResponse.loans == 0 then
         clearScreen()
         drawHeader("◆ MAKE PAYMENT ◆", username)
         drawBox(20, 10, 40, 5, colors.bg)
@@ -537,33 +637,47 @@ local function makePayment()
         io.read()
         return
     end
+    
     clearScreen()
     drawHeader("◆ MAKE PAYMENT ◆", username)
     drawBox(15, 6, 50, 14, colors.bg)
     gpu.setForeground(colors.text)
     gpu.set(17, 7, "Balance: " .. string.format("%.2f CR", balance))
+    
     local loanId = input("Loan ID:    ", 9, false, 15)
     if not loanId or loanId == "" then return end
+    
     local amountStr = input("Amount:     ", 11, false, 15)
     local amount = tonumber(amountStr)
+    
     if not amount or amount <= 0 then
         showStatus("✗ Invalid amount", "error")
         os.sleep(2)
         return
     end
+    
     if amount > balance then
         showStatus("✗ Insufficient funds", "error")
         os.sleep(2)
         return
     end
+    
     showStatus("⟳ Processing payment...", "info")
     local response = sendAndWait({command = "make_loan_payment", username = username, password = password, loanId = loanId, amount = amount})
-    if response and response.success then
+    
+    -- ⭐ FIX: Check if response exists
+    if not response then
+        showStatus("✗ No response from server", "error")
+        os.sleep(2)
+        return
+    end
+    
+    if response.success then
         balance = response.balance
         showStatus(string.format("✓ Paid %.2f CR, Remaining: %.2f CR", response.paid, response.remaining), "success")
         os.sleep(3)
     else
-        showStatus("✗ " .. (response and response.message or "Payment failed"), "error")
+        showStatus("✗ " .. (response.message or "Payment failed"), "error")
         os.sleep(2)
     end
 end
@@ -574,7 +688,7 @@ local function loanMenu()
         drawHeader("◆ LOAN CENTER ◆", username)
         drawBox(20, 7, 40, 12, colors.bg)
         gpu.setForeground(colors.text)
-        centerText(8, "Credit Score: " .. creditScore .. " (" .. creditRating .. ")")
+        centerText(8, "Credit Score: " .. (creditScore or 0) .. " (" .. (creditRating or "UNKNOWN") .. ")")
         gpu.setForeground(colors.accent)
         centerText(10, "1  View Credit Score")
         centerText(11, "2  Check Eligibility")
@@ -593,7 +707,7 @@ local function loanMenu()
     end
 end
 
--- Admin Functions
+-- Admin Functions (with nil checks added)
 local function getPendingLoans()
     local response = sendAndWait({command = "get_pending_loans", username = username, password = password})
     if response and response.success then
@@ -701,17 +815,19 @@ local function viewPendingLoansUI()
         gpu.setForeground(colors.text)
         gpu.set(12, 9, "User: " .. app.username)
         
+        -- ⭐ FIX: Handle missing creditRating
+        local creditRating = app.creditRating or "UNKNOWN"
         local ratingColor = colors.textDim
-        if app.creditRating == "EXCELLENT" then ratingColor = colors.excellent
-        elseif app.creditRating == "GOOD" then ratingColor = colors.good
-        elseif app.creditRating == "FAIR" then ratingColor = colors.fair
-        elseif app.creditRating == "POOR" or app.creditRating == "BAD" then ratingColor = colors.poor
+        if creditRating == "EXCELLENT" then ratingColor = colors.excellent
+        elseif creditRating == "GOOD" then ratingColor = colors.good
+        elseif creditRating == "FAIR" then ratingColor = colors.fair
+        elseif creditRating == "POOR" or creditRating == "BAD" then ratingColor = colors.poor
         end
         
         gpu.setForeground(colors.textDim)
         gpu.set(12, 10, "Credit Score: ")
         gpu.setForeground(ratingColor)
-        gpu.set(26, 10, app.creditScore .. " (" .. app.creditRating .. ")")
+        gpu.set(26, 10, (app.creditScore or 0) .. " (" .. creditRating .. ")")
         
         gpu.setForeground(colors.textDim)
         gpu.set(12, 12, "Amount Requested:")
@@ -776,14 +892,19 @@ local function viewPendingLoansUI()
             if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
                 showStatus("⟳ Approving loan...", "info")
                 local response = approveLoan(app.pendingId)
-                if response and response.success then
-                    showStatus("✓ Loan approved! Loan ID: " .. response.loanId, "success")
+                
+                -- ⭐ FIX: Check if response exists
+                if not response then
+                    showStatus("✗ No response from server", "error")
+                    os.sleep(2)
+                elseif response.success then
+                    showStatus("✓ Loan approved! Loan ID: " .. (response.loanId or "UNKNOWN"), "success")
                     os.sleep(2)
                     pending = getPendingLoans()
                     if #pending == 0 then return end
                     currentIndex = math.min(currentIndex, #pending)
                 else
-                    showStatus("✗ " .. (response and response.message or "Failed"), "error")
+                    showStatus("✗ " .. (response.message or "Failed"), "error")
                     os.sleep(2)
                 end
             end
@@ -800,14 +921,19 @@ local function viewPendingLoansUI()
                 if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
                     showStatus("⟳ Denying loan...", "info")
                     local response = denyLoan(app.pendingId, reason)
-                    if response and response.success then
+                    
+                    -- ⭐ FIX: Check if response exists
+                    if not response then
+                        showStatus("✗ No response from server", "error")
+                        os.sleep(2)
+                    elseif response.success then
                         showStatus("✓ Loan denied", "success")
                         os.sleep(2)
                         pending = getPendingLoans()
                         if #pending == 0 then return end
                         currentIndex = math.min(currentIndex, #pending)
                     else
-                        showStatus("✗ " .. (response and response.message or "Failed"), "error")
+                        showStatus("✗ " .. (response.message or "Failed"), "error")
                         os.sleep(2)
                     end
                 end
@@ -820,18 +946,32 @@ local function viewPendingLoansUI()
 end
 
 local function adminPanel()
-    -- First verify with server that we're actually an admin
     showStatus("⟳ Verifying admin access...", "info")
     local verifyResponse = sendAndWait({command = "get_pending_loans", username = username, password = password})
     
-    if not verifyResponse or not verifyResponse.success then
+    -- ⭐ FIX: Check if verifyResponse exists
+    if not verifyResponse then
+        clearScreen()
+        drawHeader("◆ CONNECTION ERROR ◆")
+        drawBox(20, 10, 40, 6, colors.bg)
+        gpu.setForeground(colors.error)
+        centerText(12, "⚠ Server Not Responding")
+        gpu.setForeground(colors.textDim)
+        centerText(14, "Cannot verify admin access")
+        centerText(16, "Press Enter to continue")
+        drawFooter("Connection Error")
+        io.read()
+        return
+    end
+    
+    if not verifyResponse.success then
         clearScreen()
         drawHeader("◆ ACCESS DENIED ◆")
         drawBox(20, 10, 40, 6, colors.bg)
         gpu.setForeground(colors.error)
         centerText(12, "⚠ Admin Access Required")
         gpu.setForeground(colors.textDim)
-        centerText(14, verifyResponse and verifyResponse.message or "You do not have admin privileges")
+        centerText(14, verifyResponse.message or "You do not have admin privileges")
         centerText(16, "Press Enter to continue")
         drawFooter("Access Denied")
         io.read()
@@ -902,10 +1042,14 @@ local function adminPanel()
                     local bal = tonumber(balStr) or 100
                     showStatus("⟳ Creating account...", "info")
                     local resp = adminCreateAccount(newUser, newPass, bal)
-                    if resp and resp.success then
+                    
+                    -- ⭐ FIX: Check if resp exists
+                    if not resp then
+                        showStatus("✗ No response from server", "error")
+                    elseif resp.success then
                         showStatus("✓ Account created: " .. newUser, "success")
                     else
-                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                        showStatus("✗ " .. (resp.message or "Failed"), "error")
                     end
                     os.sleep(2)
                 end
@@ -926,10 +1070,14 @@ local function adminPanel()
                 if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
                     showStatus("⟳ Deleting account...", "info")
                     local resp = adminDeleteAccount(targetUser)
-                    if resp and resp.success then
+                    
+                    -- ⭐ FIX: Check if resp exists
+                    if not resp then
+                        showStatus("✗ No response from server", "error")
+                    elseif resp.success then
                         showStatus("✓ Account deleted", "success")
                     else
-                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                        showStatus("✗ " .. (resp.message or "Failed"), "error")
                     end
                     os.sleep(2)
                 end
@@ -947,10 +1095,14 @@ local function adminPanel()
                 if newBal then
                     showStatus("⟳ Updating balance...", "info")
                     local resp = adminSetBalance(targetUser, newBal)
-                    if resp and resp.success then
+                    
+                    -- ⭐ FIX: Check if resp exists
+                    if not resp then
+                        showStatus("✗ No response from server", "error")
+                    elseif resp.success then
                         showStatus("✓ Balance updated", "success")
                     else
-                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                        showStatus("✗ " .. (resp.message or "Failed"), "error")
                     end
                     os.sleep(2)
                 end
@@ -970,19 +1122,27 @@ local function adminPanel()
                 if actionChar == string.byte('1') then
                     showStatus("⟳ Locking account...", "info")
                     local resp = adminLockAccount(targetUser)
-                    if resp and resp.success then
+                    
+                    -- ⭐ FIX: Check if resp exists
+                    if not resp then
+                        showStatus("✗ No response from server", "error")
+                    elseif resp.success then
                         showStatus("✓ Account locked", "success")
                     else
-                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                        showStatus("✗ " .. (resp.message or "Failed"), "error")
                     end
                     os.sleep(2)
                 elseif actionChar == string.byte('2') then
                     showStatus("⟳ Unlocking account...", "info")
                     local resp = adminUnlockAccount(targetUser)
-                    if resp and resp.success then
+                    
+                    -- ⭐ FIX: Check if resp exists
+                    if not resp then
+                        showStatus("✗ No response from server", "error")
+                    elseif resp.success then
                         showStatus("✓ Account unlocked", "success")
                     else
-                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                        showStatus("✗ " .. (resp.message or "Failed"), "error")
                     end
                     os.sleep(2)
                 end
@@ -999,10 +1159,14 @@ local function adminPanel()
                 if newPass and newPass ~= "" then
                     showStatus("⟳ Resetting password...", "info")
                     local resp = adminResetPassword(targetUser, newPass)
-                    if resp and resp.success then
+                    
+                    -- ⭐ FIX: Check if resp exists
+                    if not resp then
+                        showStatus("✗ No response from server", "error")
+                    elseif resp.success then
                         showStatus("✓ Password reset", "success")
                     else
-                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                        showStatus("✗ " .. (resp.message or "Failed"), "error")
                     end
                     os.sleep(2)
                 end
@@ -1013,7 +1177,12 @@ local function adminPanel()
             drawHeader("◆ ALL ACCOUNTS ◆", "User list")
             showStatus("⟳ Loading accounts...", "info")
             local resp = adminViewAllAccounts()
-            if resp and resp.success and resp.accounts then
+            
+            -- ⭐ FIX: Check if resp exists
+            if not resp then
+                showStatus("✗ No response from server", "error")
+                os.sleep(2)
+            elseif resp.success and resp.accounts then
                 clearScreen()
                 drawHeader("◆ ALL ACCOUNTS ◆", "Total: " .. #resp.accounts)
                 gpu.setForeground(colors.textDim)
@@ -1073,10 +1242,14 @@ local function adminPanel()
                 if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
                     showStatus("⟳ Toggling admin status...", "info")
                     local resp = adminToggleAdmin(targetUser)
-                    if resp and resp.success then
+                    
+                    -- ⭐ FIX: Check if resp exists
+                    if not resp then
+                        showStatus("✗ No response from server", "error")
+                    elseif resp.success then
                         showStatus("✓ Admin status toggled", "success")
                     else
-                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                        showStatus("✗ " .. (resp.message or "Failed"), "error")
                     end
                     os.sleep(2)
                 end
@@ -1089,7 +1262,12 @@ local function adminPanel()
             drawHeader("◆ ALL LOANS ◆", "System-wide loans")
             showStatus("⟳ Loading loans...", "info")
             local resp = adminViewAllLoans()
-            if resp and resp.success and resp.loans then
+            
+            -- ⭐ FIX: Check if resp exists
+            if not resp then
+                showStatus("✗ No response from server", "error")
+                os.sleep(2)
+            elseif resp.success and resp.loans then
                 clearScreen()
                 drawHeader("◆ ALL LOANS ◆", "Total: " .. #resp.loans)
                 gpu.setForeground(colors.textDim)
@@ -1133,7 +1311,12 @@ local function adminPanel()
             drawHeader("◆ LOCKED ACCOUNTS ◆", "Overdue loans")
             showStatus("⟳ Loading locked accounts...", "info")
             local resp = adminViewLockedAccounts()
-            if resp and resp.success and resp.lockedAccounts then
+            
+            -- ⭐ FIX: Check if resp exists
+            if not resp then
+                showStatus("✗ No response from server", "error")
+                os.sleep(2)
+            elseif resp.success and resp.lockedAccounts then
                 if #resp.lockedAccounts == 0 then
                     clearScreen()
                     drawHeader("◆ LOCKED ACCOUNTS ◆")
@@ -1187,10 +1370,14 @@ local function adminPanel()
                 if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
                     showStatus("⟳ Forgiving loan...", "info")
                     local resp = adminForgiveLoan(loanId)
-                    if resp and resp.success then
+                    
+                    -- ⭐ FIX: Check if resp exists
+                    if not resp then
+                        showStatus("✗ No response from server", "error")
+                    elseif resp.success then
                         showStatus("✓ Loan forgiven", "success")
                     else
-                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                        showStatus("✗ " .. (resp.message or "Failed"), "error")
                     end
                     os.sleep(2)
                 end
@@ -1215,10 +1402,14 @@ local function adminPanel()
                     if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
                         showStatus("⟳ Adjusting credit score...", "info")
                         local resp = adminAdjustCredit(targetUser, newScore, reason)
-                        if resp and resp.success then
+                        
+                        -- ⭐ FIX: Check if resp exists
+                        if not resp then
+                            showStatus("✗ No response from server", "error")
+                        elseif resp.success then
                             showStatus("✓ Credit score adjusted to " .. newScore, "success")
                         else
-                            showStatus("✗ " .. (resp and resp.message or "Failed to adjust"), "error")
+                            showStatus("✗ " .. (resp.message or "Failed to adjust"), "error")
                         end
                         os.sleep(2)
                     else
@@ -1267,11 +1458,15 @@ local function mainMenu()
         if char == string.byte('1') then
             showStatus("⟳ Refreshing balance...", "info")
             local response = sendAndWait({command = "balance", username = username, password = password})
-            if response and response.success then
+            
+            -- ⭐ FIX: Check if response exists
+            if not response then
+                showStatus("✗ No response from server", "error")
+            elseif response.success then
                 balance = response.balance
                 showStatus("✓ Balance: " .. string.format("%.2f", balance) .. " CR", "success")
             else
-                showStatus("✗ " .. (response and response.message or "Failed"), "error")
+                showStatus("✗ " .. (response.message or "Failed"), "error")
             end
             os.sleep(2)
         elseif char == string.byte('2') then
@@ -1302,6 +1497,8 @@ local function mainMenu()
                     if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
                         showStatus("⟳ Processing transfer...", "info")
                         local response = sendAndWait({command = "transfer", username = username, password = password, recipient = recipient, amount = amount}, 10)
+                        
+                        -- ⭐ FIX: Check if response exists
                         if not response then
                             showStatus("✗ No response from server (timeout)", "error")
                             os.sleep(3)
@@ -1322,7 +1519,6 @@ local function mainMenu()
         elseif char == string.byte('3') then
             loanMenu()
         elseif char == string.byte('4') and isAdmin then
-            -- Admin Panel - isAdmin is just for UI, server still verifies everything
             adminPanel()
         elseif char == string.byte('0') then
             -- Logout
