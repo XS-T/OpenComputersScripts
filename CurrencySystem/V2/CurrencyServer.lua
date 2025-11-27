@@ -1977,7 +1977,6 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                     acc.lastActivity = os.time()
                     response.success = true
                     response.balance = acc.balance
-                    response.isAdmin = acc.isAdmin or false
                     response.creditScore = creditScores[data.username] and creditScores[data.username].score or 650
                     response.creditRating = getCreditRating(response.creditScore)
                     response.message = "Login successful"
