@@ -1,11 +1,12 @@
 -- Digital Currency Server with Admin Panel + Loans & Credit for OpenComputers 1.7.10
--- Complete working version with all features
+-- Complete working version with all features + THREADED CONCURRENT PROCESSING
 
 local component = require("component")
 local event = require("event")
 local serialization = require("serialization")
 local filesystem = require("filesystem")
 local computer = require("computer")
+local thread = require("thread")
 local gpu = component.gpu
 local term = require("term")
 local unicode = require("unicode")
@@ -87,7 +88,9 @@ local stats = {
     relayCount = 0,
     totalLoans = 0,
     activeLoans = 0,
-    totalInterestEarned = 0
+    totalInterestEarned = 0,
+    activeThreads = 0,
+    totalRequests = 0
 }
 
 local adminMode = false
@@ -1161,7 +1164,11 @@ local function drawServerUI()
     gpu.set(65, 4, "Port: " .. PORT)
     gpu.set(2, 5, "Loans: " .. stats.activeLoans .. "/" .. stats.totalLoans)
     gpu.setForeground(0xFFFF00)
-    gpu.set(25, 5, "Mode: WIRELESS")
+    gpu.set(25, 5, "Mode: THREADED")
+    gpu.setForeground(0x00FFFF)
+    gpu.set(42, 5, "Active: " .. stats.activeThreads)
+    gpu.setForeground(0xAAAAAA)
+    gpu.set(56, 5, "Total: " .. stats.totalRequests)
     if RAID_ENABLED then
         gpu.setForeground(0x00FF00)
         gpu.set(45, 5, "RAID: " .. #RAID_DRIVES .. " drives")
@@ -1969,34 +1976,46 @@ end
 local function handleMessage(eventType, _, sender, port, distance, message)
     if port ~= PORT then return end
     
-    -- Try to decrypt the message (from relay)
-    local decryptedMessage = decryptRelayMessage(message)
-    local isEncrypted = (decryptedMessage ~= nil)
+    -- Increment request counter
+    stats.totalRequests = stats.totalRequests + 1
     
-    -- If decryption failed, try as plaintext (backward compatibility or direct connection)
-    local messageToProcess = decryptedMessage or message
-    
-    local success, data = pcall(serialization.unserialize, messageToProcess)
-    if not success or not data then return end
-    
-    if data.type == "relay_ping" then
-        registerRelay(sender, data.relay_name or "Unknown")
-        local response = {type = "server_response", serverName = SERVER_NAME}
-        local serializedResponse = serialization.serialize(response)
-        -- Encrypt response if incoming was encrypted
-        local responseToSend = isEncrypted and encryptRelayMessage(serializedResponse) or serializedResponse
-        modem.send(sender, PORT, responseToSend)
-        if not adminMode then drawServerUI() end
-        return
-    end
-    if data.type == "relay_heartbeat" then
-        registerRelay(sender, data.relay_name or "Unknown")
-        if relays[sender] and data.clients then relays[sender].clients = data.clients end
-        if not adminMode then drawServerUI() end
-        return
-    end
-    local relayAddress = sender
-    local response = {type = "response"}
+    -- Spawn a thread to handle this request concurrently
+    thread.create(function()
+        stats.activeThreads = stats.activeThreads + 1
+        
+        -- Try to decrypt the message (from relay)
+        local decryptedMessage = decryptRelayMessage(message)
+        local isEncrypted = (decryptedMessage ~= nil)
+        
+        -- If decryption failed, try as plaintext (backward compatibility or direct connection)
+        local messageToProcess = decryptedMessage or message
+        
+        local success, data = pcall(serialization.unserialize, messageToProcess)
+        if not success or not data then 
+            stats.activeThreads = stats.activeThreads - 1
+            return 
+        end
+        
+        if data.type == "relay_ping" then
+            registerRelay(sender, data.relay_name or "Unknown")
+            local response = {type = "server_response", serverName = SERVER_NAME}
+            local serializedResponse = serialization.serialize(response)
+            -- Encrypt response if incoming was encrypted
+            local responseToSend = isEncrypted and encryptRelayMessage(serializedResponse) or serializedResponse
+            modem.send(sender, PORT, responseToSend)
+            if not adminMode then drawServerUI() end
+            stats.activeThreads = stats.activeThreads - 1
+            return
+        end
+        if data.type == "relay_heartbeat" then
+            registerRelay(sender, data.relay_name or "Unknown")
+            if relays[sender] and data.clients then relays[sender].clients = data.clients end
+            if not adminMode then drawServerUI() end
+            stats.activeThreads = stats.activeThreads - 1
+            return
+        end
+        local relayAddress = sender
+        local response = {type = "response"}
     if data.command == "login" then
         if not verifyPassword(data.username, data.password) then
             response.success = false
@@ -2489,6 +2508,8 @@ local function handleMessage(eventType, _, sender, port, distance, message)
     local responseToSend = isEncrypted and encryptRelayMessage(serializedResponse) or serializedResponse
     modem.send(sender, PORT, responseToSend)
     if not adminMode then drawServerUI() end
+    stats.activeThreads = stats.activeThreads - 1
+    end):detach()  -- Detach thread so it doesn't block main process
 end
 
 -- Key press handler for admin mode
