@@ -29,9 +29,11 @@ local ENCRYPTION_KEY = "RelayServerSecureKey2025"
 
 -- Encryption functions
 local function encryptMessage(message)
+    -- Generate random 16-byte IV (128 bits)
     local iv = data.random(16)
-    local encrypted = data.encrypt(message, iv, ENCRYPTION_KEY)
-    -- Prepend IV to encrypted data
+    -- Encrypt using AES with the IV and key
+    local encrypted = data.encrypt(message, ENCRYPTION_KEY, iv)
+    -- Prepend IV to encrypted data (IV is not secret)
     return iv .. encrypted
 end
 
@@ -39,9 +41,12 @@ local function decryptMessage(encryptedData)
     if not encryptedData or #encryptedData < 16 then
         return nil
     end
+    -- Extract IV (first 16 bytes)
     local iv = encryptedData:sub(1, 16)
+    -- Extract encrypted content (rest)
     local encrypted = encryptedData:sub(17)
-    local success, decrypted = pcall(data.decrypt, encrypted, iv, ENCRYPTION_KEY)
+    -- Decrypt
+    local success, decrypted = pcall(data.decrypt, encrypted, ENCRYPTION_KEY, iv)
     if success then
         return decrypted
     end
