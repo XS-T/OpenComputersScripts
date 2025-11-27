@@ -25,18 +25,12 @@ local modem = component.modem
 local data = component.data
 
 -- Encryption key (must match server)
-local ENCRYPTION_KEY_BASE = "ad4915be95e00d12801aeceede75bb6b"
-local ENCRYPTION_KEY = ENCRYPTION_KEY_BASE  --.. string.rep("\0", 32 - #ENCRYPTION_KEY_BASE)
-
+local ENCRYPTION_KEY = "ec33be7bfbdfcca4e383eb6d66cd8698789589e01c14dad04d59e7486b8a1604"
+local ENCRYPTION_IV = "196d9705f55fa5df003f87ae8b8bb5b7"
 -- Encryption functions
 local function encryptMessage(message)
-    -- Generate random 16-byte IV (128 bits)
-    local iv = ""
-    for i = 1, 16 do
-        iv = iv .. string.char(math.random(0, 255))
-    end
     -- Encrypt using AES-256
-    local encrypted = data.encrypt(message, ENCRYPTION_KEY, iv)
+    local encrypted = data.encrypt(message, ENCRYPTION_KEY, ENCRYPTION_IV)
     -- Prepend IV to encrypted data
     return iv .. encrypted
 end
