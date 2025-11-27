@@ -1150,6 +1150,25 @@ local function input(prompt, y, hidden, maxLen)
     return text
 end
 
+
+-- Lock account function (for overdue loans and admin actions)
+local function lockAccount(username, reason)
+    local acc = getAccount(username)
+    if not acc then return false, "Account not found" end
+    
+    acc.locked = true
+    acc.lockReason = reason or "Locked by administrator"
+    acc.lockedDate = os.time()
+    
+    endSession(username)
+    saveAccounts()
+    
+    log("Account locked: " .. username .. " - " .. (reason or "No reason"), "SECURITY")
+    
+    return true, "Account locked"
+end
+
+
 local function drawBox(x, y, width, height, color)
     gpu.setBackground(color or colors.bg)
     gpu.fill(x, y, width, height, " ")
@@ -1325,19 +1344,25 @@ local function adminMainMenu()
     gpu.set(40, 12, "8  View Locked")
     gpu.set(40, 13, "9  Forgive Loan")
     gpu.set(40, 14, "A  Adjust Credit")
+    gpu.set(40, 15, "P  Pending Loans ★")
     
     gpu.setForeground(colors.text)
-    gpu.set(40, 15, "SYSTEM")
+    gpu.set(40, 16, "SYSTEM")
     gpu.setForeground(colors.textDim)
-    gpu.set(40, 16, "B  Admin Password")
-    gpu.set(40, 17, "C  View RAID")
+    gpu.set(40, 17, "B  Admin Password")
+    gpu.set(40, 18, "C  View RAID")
     
     gpu.setForeground(colors.warning)
-    gpu.set(13, 19, "0  Exit Admin Mode")
+    gpu.set(13, 20, "0  Exit Admin Mode")
     
     local pendingCount = 0
     for _, app in pairs(pendingLoans) do
         if app.status == "pending" then pendingCount = pendingCount + 1 end
+    end
+    
+    if pendingCount > 0 then
+        gpu.setForeground(colors.warning)
+        gpu.set(58, 15, "(" .. pendingCount .. ")")
     end
     
     drawFooter("Admin Tools • Loans: " .. stats.activeLoans .. " • Pending: " .. pendingCount)
@@ -1897,7 +1922,7 @@ local function adminAdjustCreditUI()
     end
     
     gpu.setForeground(colors.textDim)
-    local currentRating = getCreditRating(credit.score)
+    local currentRating, _ = getCreditRating(credit.score)
     gpu.set(17, 14, "Current: " .. credit.score .. " (" .. currentRating .. ")")
     
     gpu.setForeground(colors.text)
@@ -1978,6 +2003,233 @@ local function adminToggleAdminUI()
     else
         showStatus("Cancelled", "warning")
         os.sleep(1)
+    end
+end
+
+local function adminViewPendingLoansUI()
+    while true do
+        clearScreen()
+        drawHeader("◆ PENDING LOAN APPLICATIONS ◆", "Awaiting approval/denial", true)
+        
+        local pendingList = getPendingLoans()
+        
+        if #pendingList == 0 then
+            drawBox(20, 10, 40, 5, colors.bg)
+            gpu.setForeground(colors.success)
+            gpu.set(math.floor((w - 22) / 2), 12, "✓ No pending applications")
+            gpu.setForeground(colors.textDim)
+            gpu.set(math.floor((w - 24) / 2), 14, "Press any key to return")
+            drawFooter("No pending loan applications")
+            event.pull("key_down")
+            return
+        end
+        
+        -- Display pending loans
+        gpu.setForeground(colors.textDim)
+        gpu.set(2, 5, "ID")
+        gpu.set(18, 5, "User")
+        gpu.set(32, 5, "Amount")
+        gpu.set(44, 5, "Term")
+        gpu.set(52, 5, "Interest")
+        gpu.set(63, 5, "Total")
+        
+        gpu.setForeground(colors.border)
+        for i = 1, 76 do gpu.set(2 + i, 6, "─") end
+        
+        local y = 7
+        local maxDisplay = math.min(10, #pendingList)
+        
+        for i = 1, maxDisplay do
+            local app = pendingList[i]
+            
+            gpu.setForeground(colors.warning)
+            gpu.set(2, y, app.pendingId)
+            
+            gpu.setForeground(colors.text)
+            local username = app.username
+            if #username > 12 then username = username:sub(1, 9) .. "..." end
+            gpu.set(18, y, username)
+            
+            gpu.setForeground(colors.textDim)
+            gpu.set(32, y, string.format("%.2f", app.amount))
+            gpu.set(44, y, app.termDays .. "d")
+            gpu.set(52, y, string.format("%.1f%%", app.interestRate * 100))
+            gpu.set(63, y, string.format("%.2f", app.totalOwed))
+            
+            y = y + 1
+        end
+        
+        if #pendingList > maxDisplay then
+            gpu.setForeground(colors.textDim)
+            gpu.set(2, y + 1, "Showing " .. maxDisplay .. " of " .. #pendingList .. " applications")
+        end
+        
+        -- Instructions
+        y = y + 3
+        gpu.setForeground(colors.accent)
+        gpu.set(2, y, "Actions:")
+        gpu.setForeground(colors.textDim)
+        gpu.set(2, y + 1, "  A - Approve loan")
+        gpu.set(2, y + 2, "  D - Deny loan")
+        gpu.set(2, y + 3, "  V - View details")
+        gpu.set(2, y + 4, "  0 - Return to menu")
+        
+        drawFooter("Pending: " .. #pendingList .. " • Press A/D/V/0")
+        
+        local _, _, char = event.pull("key_down")
+        
+        if char == string.byte('0') then
+            return
+        elseif char == string.byte('a') or char == string.byte('A') then
+            -- Approve loan
+            clearScreen()
+            drawHeader("◆ APPROVE LOAN ◆", "Grant loan approval", true)
+            drawBox(15, 8, 50, 8, colors.bg)
+            
+            gpu.setForeground(colors.text)
+            local pendingId = input("Pending ID: ", 10, false, 20)
+            
+            if pendingId and pendingId ~= "" then
+                local app = pendingLoans[pendingId]
+                if not app then
+                    showStatus("✗ Application not found", "error")
+                    os.sleep(2)
+                elseif app.status ~= "pending" then
+                    showStatus("✗ Already processed", "error")
+                    os.sleep(2)
+                else
+                    gpu.setForeground(colors.textDim)
+                    gpu.set(17, 13, "User: " .. app.username)
+                    gpu.set(17, 14, "Amount: " .. string.format("%.2f CR", app.amount))
+                    gpu.setForeground(colors.warning)
+                    gpu.set(17, 16, "Approve this loan? (Y/N)")
+                    
+                    local _, _, confirmChar = event.pull("key_down")
+                    if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
+                        local adminUsername = "ServerAdmin"
+                        for username, session in pairs(activeSessions) do
+                            local acc = getAccount(username)
+                            if acc and acc.isAdmin then
+                                adminUsername = username
+                                break
+                            end
+                        end
+                        
+                        local ok, loanIdOrMsg = approveLoanApplication(pendingId, adminUsername)
+                        if ok then
+                            showStatus("✓ Loan approved: " .. loanIdOrMsg, "success")
+                            log("ADMIN: Loan " .. pendingId .. " approved by " .. adminUsername, "ADMIN")
+                        else
+                            showStatus("✗ " .. loanIdOrMsg, "error")
+                        end
+                        os.sleep(2)
+                    else
+                        showStatus("Cancelled", "warning")
+                        os.sleep(1)
+                    end
+                end
+            end
+            
+        elseif char == string.byte('d') or char == string.byte('D') then
+            -- Deny loan
+            clearScreen()
+            drawHeader("◆ DENY LOAN ◆", "Reject loan application", true)
+            drawBox(15, 8, 50, 10, colors.bg)
+            
+            gpu.setForeground(colors.text)
+            local pendingId = input("Pending ID: ", 10, false, 20)
+            
+            if pendingId and pendingId ~= "" then
+                local app = pendingLoans[pendingId]
+                if not app then
+                    showStatus("✗ Application not found", "error")
+                    os.sleep(2)
+                elseif app.status ~= "pending" then
+                    showStatus("✗ Already processed", "error")
+                    os.sleep(2)
+                else
+                    gpu.setForeground(colors.textDim)
+                    gpu.set(17, 13, "User: " .. app.username)
+                    gpu.set(17, 14, "Amount: " .. string.format("%.2f CR", app.amount))
+                    
+                    gpu.setForeground(colors.text)
+                    local reason = input("Reason:     ", 16, false, 30)
+                    
+                    gpu.setForeground(colors.warning)
+                    gpu.set(17, 18, "Deny this loan? (Y/N)")
+                    
+                    local _, _, confirmChar = event.pull("key_down")
+                    if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
+                        local adminUsername = "ServerAdmin"
+                        for username, session in pairs(activeSessions) do
+                            local acc = getAccount(username)
+                            if acc and acc.isAdmin then
+                                adminUsername = username
+                                break
+                            end
+                        end
+                        
+                        local ok, msg = denyLoanApplication(pendingId, adminUsername, reason)
+                        if ok then
+                            showStatus("✓ Loan denied", "success")
+                            log("ADMIN: Loan " .. pendingId .. " denied by " .. adminUsername, "ADMIN")
+                        else
+                            showStatus("✗ " .. msg, "error")
+                        end
+                        os.sleep(2)
+                    else
+                        showStatus("Cancelled", "warning")
+                        os.sleep(1)
+                    end
+                end
+            end
+            
+        elseif char == string.byte('v') or char == string.byte('V') then
+            -- View details
+            clearScreen()
+            drawHeader("◆ LOAN DETAILS ◆", "View application information", true)
+            drawBox(15, 7, 50, 15, colors.bg)
+            
+            gpu.setForeground(colors.text)
+            local pendingId = input("Pending ID: ", 9, false, 20)
+            
+            if pendingId and pendingId ~= "" then
+                local app = pendingLoans[pendingId]
+                if not app then
+                    showStatus("✗ Application not found", "error")
+                    os.sleep(2)
+                else
+                    local y = 12
+                    gpu.setForeground(colors.accent)
+                    gpu.set(17, y, "Application: " .. app.pendingId)
+                    y = y + 1
+                    
+                    gpu.setForeground(colors.textDim)
+                    gpu.set(17, y, "User: " .. app.username)
+                    y = y + 1
+                    gpu.set(17, y, "Amount: " .. string.format("%.2f CR", app.amount))
+                    y = y + 1
+                    gpu.set(17, y, "Term: " .. app.termDays .. " days")
+                    y = y + 1
+                    gpu.set(17, y, "Interest Rate: " .. string.format("%.1f%%", app.interestRate * 100))
+                    y = y + 1
+                    gpu.set(17, y, "Interest: " .. string.format("%.2f CR", app.interest))
+                    y = y + 1
+                    gpu.set(17, y, "Total Owed: " .. string.format("%.2f CR", app.totalOwed))
+                    y = y + 1
+                    gpu.set(17, y, "Credit Score: " .. app.creditScore)
+                    y = y + 1
+                    
+                    local rating, _ = getCreditRating(app.creditScore)
+                    gpu.set(17, y, "Rating: " .. rating)
+                    y = y + 2
+                    
+                    gpu.setForeground(colors.textDim)
+                    gpu.set(17, y, "Press any key to continue")
+                    event.pull("key_down")
+                end
+            end
+        end
     end
 end
 
@@ -2324,7 +2576,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                 response.success = false
                 response.message = "Admin access required"
             else
-                local ok, msg = lockAccount(data.targetUsername, "Locked by admin: " .. data.username)
+                local ok, msg = lockAccount(data.targetUsername)
                 response.success = ok
                 response.message = msg
             end
@@ -2554,6 +2806,7 @@ local function handleKeyPress(eventType, _, _, code)
                     elseif choice == string.byte('b') or choice == string.byte('B') then adminChangePasswordUI()
                     elseif choice == string.byte('c') or choice == string.byte('C') then adminViewRAIDUI()
                     elseif choice == string.byte('d') or choice == string.byte('D') then adminToggleAdminUI()
+                    elseif choice == string.byte('p') or choice == string.byte('P') then adminViewPendingLoansUI()
                     elseif choice == string.byte('0') then
                         adminMode = false
                         adminAuthenticated = false
