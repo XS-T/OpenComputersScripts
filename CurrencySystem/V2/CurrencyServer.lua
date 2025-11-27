@@ -1983,6 +1983,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                     acc.lastActivity = os.time()
                     response.success = true
                     response.balance = acc.balance
+                    response.isAdmin = acc.isAdmin or false
                     response.creditScore = creditScores[data.username] and creditScores[data.username].score or 650
                     response.creditRating = getCreditRating(response.creditScore)
                     response.message = "Login successful"
@@ -2408,9 +2409,16 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                 response.success = false
                 response.message = "Admin access required"
             else
-                local ok, msg = adminAdjustCredit(data.targetUsername, data.newScore, data.reason)
-                response.success = ok
-                response.message = msg
+                -- Check if target account exists
+                local targetAcc = getAccount(data.targetUsername)
+                if not targetAcc then
+                    response.success = false
+                    response.message = "Target account not found"
+                else
+                    local ok, msg = adminAdjustCredit(data.targetUsername, data.newScore, data.reason)
+                    response.success = ok
+                    response.message = msg
+                end
             end
         end
     elseif data.command == "list_accounts" then
