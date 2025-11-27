@@ -16,6 +16,7 @@ local SERVER_NAME = "CreditBank"
 local DATA_DIR = "/home/currency/"
 local CONFIG_FILE = DATA_DIR .. "admin.cfg"
 local LOAN_FILE = DATA_DIR .. "loans.dat"
+local PENDING_LOANS_FILE = DATA_DIR .. "pending_loans.dat"
 local CREDIT_FILE = DATA_DIR .. "credit_scores.dat"
 local DEFAULT_ADMIN_PASSWORD = "ECU2025"
 
@@ -50,6 +51,8 @@ local activeSessions = {}
 local loans = {}
 local loanIndex = {}
 local nextLoanId = 1
+local pendingLoans = {}  -- Loans waiting for admin approval
+local nextPendingId = 1
 local creditScores = {}
 local stats = {
     totalAccounts = 0,
@@ -391,7 +394,7 @@ local function getLoanEligibility(username)
     }
 end
 
-local function createLoan(username, amount, termDays)
+local function submitLoanApplication(username, amount, termDays)
     if amount < LOAN_CONFIG.MIN_LOAN_AMOUNT then
         return false, "Minimum loan amount is " .. LOAN_CONFIG.MIN_LOAN_AMOUNT .. " CR"
     end
@@ -405,42 +408,137 @@ local function createLoan(username, amount, termDays)
     if amount > eligibility.maxLoan then
         return false, "Maximum loan amount is " .. eligibility.maxLoan .. " CR"
     end
+    
+    -- Create pending loan application
+    local pendingId = "PENDING" .. string.format("%06d", nextPendingId)
+    nextPendingId = nextPendingId + 1
+    
     local interest = amount * eligibility.interestRate
     local totalOwed = amount + interest
+    
+    local application = {
+        pendingId = pendingId,
+        username = username,
+        amount = amount,
+        termDays = termDays,
+        interestRate = eligibility.interestRate,
+        interest = interest,
+        totalOwed = totalOwed,
+        creditScore = eligibility.creditScore,
+        creditRating = eligibility.creditRating,
+        appliedDate = os.time(),
+        status = "pending"  -- pending, approved, denied
+    }
+    
+    pendingLoans[pendingId] = application
+    
+    log(string.format("Loan application submitted: %s by %s for %.2f CR", pendingId, username, amount), "LOAN")
+    savePendingLoans()
+    
+    -- Notify all online admins
+    notifyAdmins(string.format("NEW LOAN: %s requests %.2f CR", username, amount))
+    
+    return true, pendingId, application
+end
+
+local function approveLoanApplication(pendingId, adminUsername)
+    local app = pendingLoans[pendingId]
+    if not app then return false, "Application not found" end
+    if app.status ~= "pending" then return false, "Application already processed" end
+    
+    local username = app.username
+    local amount = app.amount
+    local termDays = app.termDays
+    
+    -- Create the actual loan
     local loanId = "LOAN" .. string.format("%06d", nextLoanId)
     nextLoanId = nextLoanId + 1
+    
     local loan = {
         loanId = loanId,
         username = username,
         principal = amount,
-        interestRate = eligibility.interestRate,
-        interest = interest,
-        totalOwed = totalOwed,
-        remaining = totalOwed,
+        interestRate = app.interestRate,
+        interest = app.interest,
+        totalOwed = app.totalOwed,
+        remaining = app.totalOwed,
         termDays = termDays,
         issued = os.time(),
         dueDate = os.time() + (termDays * 86400),
         status = "active",
         payments = {},
         lateFees = 0,
-        accountLocked = false
+        accountLocked = false,
+        approvedBy = adminUsername,
+        pendingId = pendingId
     }
+    
     loanIndex[loanId] = loan
     if not loans[username] then loans[username] = {} end
     table.insert(loans[username], loanId)
+    
+    -- Add money to account
     local acc = getAccount(username)
     if acc then
         acc.balance = acc.balance + amount
         saveAccounts()
     end
-    recordCreditEvent(username, "loan_issued", string.format("Loan %s issued: %d CR", loanId, amount))
+    
+    -- Update application status
+    app.status = "approved"
+    app.approvedDate = os.time()
+    app.approvedBy = adminUsername
+    app.loanId = loanId
+    
+    recordCreditEvent(username, "loan_issued", string.format("Loan %s approved and issued: %d CR", loanId, amount))
     stats.totalLoans = stats.totalLoans + 1
     stats.activeLoans = stats.activeLoans + 1
-    log(string.format("Loan issued: %s to %s: %.2f CR @ %.1f%% for %d days", 
-        loanId, username, amount, eligibility.interestRate * 100, termDays), "LOAN")
+    
+    log(string.format("Loan APPROVED: %s → %s to %s: %.2f CR @ %.1f%% by admin %s", 
+        pendingId, loanId, username, amount, app.interestRate * 100, adminUsername), "LOAN")
+    
     saveLoans()
+    savePendingLoans()
     saveConfig()
+    
+    -- Notify user if online
+    notifyUser(username, string.format("Loan approved! %.2f CR added to balance", amount))
+    
     return true, loanId, loan
+end
+
+local function denyLoanApplication(pendingId, adminUsername, reason)
+    local app = pendingLoans[pendingId]
+    if not app then return false, "Application not found" end
+    if app.status ~= "pending" then return false, "Application already processed" end
+    
+    app.status = "denied"
+    app.deniedDate = os.time()
+    app.deniedBy = adminUsername
+    app.denyReason = reason or "Not specified"
+    
+    log(string.format("Loan DENIED: %s by %s (User: %s, Amount: %.2f CR) - Reason: %s", 
+        pendingId, adminUsername, app.username, app.amount, app.denyReason), "LOAN")
+    
+    recordCreditEvent(app.username, "loan_denied", string.format("Loan application %s denied", pendingId))
+    
+    savePendingLoans()
+    
+    -- Notify user if online
+    notifyUser(app.username, "Loan application denied: " .. app.denyReason)
+    
+    return true, "Application denied"
+end
+
+local function getPendingLoans()
+    local pending = {}
+    for id, app in pairs(pendingLoans) do
+        if app.status == "pending" then
+            table.insert(pending, app)
+        end
+    end
+    table.sort(pending, function(a, b) return a.appliedDate < b.appliedDate end)
+    return pending
 end
 
 local function makeLoanPayment(username, loanId, amount)
@@ -547,6 +645,20 @@ local function saveLoans()
     return false
 end
 
+local function savePendingLoans()
+    local data = {pendingLoans = pendingLoans, nextPendingId = nextPendingId}
+    local plaintext = serialization.serialize(data)
+    local encrypted = encryptData(plaintext)
+    if not encrypted then return false end
+    local file = io.open(PENDING_LOANS_FILE, "w")
+    if file then
+        file:write(encrypted)
+        file:close()
+        return true
+    end
+    return false
+end
+
 local function loadLoans()
     local file = io.open(LOAN_FILE, "r")
     if file then
@@ -565,6 +677,26 @@ local function loadLoans()
                     end
                     stats.totalLoans = 0
                     for _ in pairs(loanIndex) do stats.totalLoans = stats.totalLoans + 1 end
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function loadPendingLoans()
+    local file = io.open(PENDING_LOANS_FILE, "r")
+    if file then
+        local encrypted = file:read("*a")
+        file:close()
+        if encrypted and encrypted ~= "" then
+            local plaintext = decryptData(encrypted)
+            if plaintext then
+                local success, data = pcall(serialization.unserialize, plaintext)
+                if success and data then
+                    pendingLoans = data.pendingLoans or {}
+                    nextPendingId = data.nextPendingId or 1
                     return true
                 end
             end
@@ -667,7 +799,8 @@ local function createAccount(username, password, initialBalance, relayAddress)
         created = os.time(),
         lastActivity = os.time(),
         transactionCount = 0,
-        locked = false
+        locked = false,
+        isAdmin = false
     }
     table.insert(accounts, account)
     accountIndex[username] = #accounts
@@ -754,6 +887,135 @@ local function adminResetPassword(username, newPassword)
     log("ADMIN: Password reset for " .. username, "ADMIN")
     saveAccounts()
     return true, "Password reset"
+end
+
+-- Admin loan management functions
+local function adminViewAllLoans()
+    local loanList = {}
+    for loanId, loan in pairs(loanIndex) do
+        table.insert(loanList, loan)
+    end
+    table.sort(loanList, function(a, b)
+        if a.status ~= b.status then
+            if a.status == "active" then return true
+            elseif b.status == "active" then return false
+            elseif a.status == "default" then return true
+            elseif b.status == "default" then return false
+            end
+        end
+        return a.issued > b.issued
+    end)
+    return loanList
+end
+
+local function adminForgiveLoan(loanId)
+    local loan = loanIndex[loanId]
+    if not loan then return false, "Loan not found" end
+    
+    local username = loan.username
+    loan.remaining = 0
+    loan.status = "forgiven"
+    loan.forgivenDate = os.time()
+    
+    -- Unlock account if it was locked for this loan
+    local acc = getAccount(username)
+    if acc and acc.locked and acc.lockReason and acc.lockReason:find(loanId) then
+        acc.locked = false
+        acc.lockReason = nil
+        acc.lockedDate = nil
+    end
+    
+    stats.activeLoans = stats.activeLoans - 1
+    
+    recordCreditEvent(username, "loan_forgiven", string.format("Loan %s forgiven by admin", loanId))
+    log(string.format("ADMIN: Loan forgiven: %s for %s", loanId, username), "ADMIN")
+    
+    saveLoans()
+    saveAccounts()
+    saveCreditScores()
+    
+    return true, "Loan forgiven"
+end
+
+local function adminToggleAdminStatus(username)
+    local acc = getAccount(username)
+    if not acc then return false, "Account not found" end
+    
+    acc.isAdmin = not acc.isAdmin
+    log(string.format("ADMIN: Admin status for %s set to %s", username, tostring(acc.isAdmin)), "ADMIN")
+    saveAccounts()
+    
+    return true, "Admin status updated"
+end
+
+local function adminAdjustCredit(username, newScore, reason)
+    local credit = creditScores[username]
+    if not credit then
+        initializeCreditScore(username)
+        credit = creditScores[username]
+    end
+    
+    local oldScore = credit.score
+    newScore = math.max(300, math.min(850, newScore))
+    credit.score = newScore
+    
+    local changeDesc = string.format("Manual adjustment by admin: %d → %d", oldScore, newScore)
+    if reason and reason ~= "" then
+        changeDesc = changeDesc .. " (Reason: " .. reason .. ")"
+    end
+    
+    recordCreditEvent(username, "admin_adjustment", changeDesc)
+    log(string.format("ADMIN: Credit score adjusted for %s: %d → %d", username, oldScore, newScore), "ADMIN")
+    
+    saveCreditScores()
+    return true, "Credit score adjusted"
+end
+
+local function adminViewLockedAccounts()
+    local lockedAccounts = {}
+    for _, acc in ipairs(accounts) do
+        if acc.locked then
+            local daysLocked = 0
+            if acc.lockedDate then
+                daysLocked = math.floor((os.time() - acc.lockedDate) / 86400)
+            end
+            table.insert(lockedAccounts, {
+                username = acc.name,
+                lockReason = acc.lockReason or "Unknown",
+                lockedDate = acc.lockedDate or 0,
+                daysLocked = daysLocked,
+                balance = acc.balance
+            })
+        end
+    end
+    table.sort(lockedAccounts, function(a, b)
+        return (a.lockedDate or 0) > (b.lockedDate or 0)
+    end)
+    return lockedAccounts
+end
+
+-- Notification functions
+local function notifyAdmins(message)
+    for _, acc in ipairs(accounts) do
+        if acc.isAdmin and acc.online and acc.relay then
+            modem.send(acc.relay, NETWORK_PORT, {
+                command = "notification",
+                message = message,
+                timestamp = os.time()
+            })
+        end
+    end
+end
+
+local function notifyUser(username, message)
+    local acc = getAccount(username)
+    if acc and acc.online and acc.relay then
+        modem.send(acc.relay, NETWORK_PORT, {
+            command = "notification",
+            message = message,
+            timestamp = os.time()
+        })
+    end
 end
 
 local function registerRelay(address, relayName)
@@ -993,24 +1255,44 @@ end
 local function adminMainMenu()
     clearScreen()
     drawHeader("◆ ADMIN PANEL ◆", "Server Management Console", true)
-    drawBox(15, 6, 50, 16, colors.bg)
+    drawBox(15, 5, 50, 20, colors.bg)
     gpu.setForeground(colors.adminRed)
-    gpu.set(17, 7, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    gpu.set(17, 6, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     gpu.setForeground(colors.textDim)
-    gpu.set(17, 8, "  Administrative Tools")
+    gpu.set(17, 7, "  Administrative Tools")
     gpu.setForeground(colors.adminRed)
-    gpu.set(17, 9, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    gpu.set(17, 8, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     gpu.setForeground(colors.text)
-    gpu.set(20, 12, "1  Create Account")
-    gpu.set(20, 13, "2  Delete Account")
-    gpu.set(20, 14, "3  Set Balance")
-    gpu.set(20, 15, "4  Lock/Unlock Account")
-    gpu.set(20, 16, "5  Reset Password")
-    gpu.set(20, 17, "6  View All Accounts")
-    gpu.set(20, 18, "7  Change Admin Password")
-    gpu.set(20, 19, "8  View RAID Drives")
-    gpu.set(20, 20, "9  Exit Admin Mode")
-    drawFooter("Admin Tools • Authenticated")
+    gpu.set(20, 10, "ACCOUNT MANAGEMENT")
+    gpu.setForeground(colors.textDim)
+    gpu.set(20, 11, "1  Create Account")
+    gpu.set(20, 12, "2  Delete Account")
+    gpu.set(20, 13, "3  Set Balance")
+    gpu.set(20, 14, "4  Lock/Unlock Account")
+    gpu.set(20, 15, "5  Reset Password")
+    gpu.set(20, 16, "6  View All Accounts")
+    gpu.set(20, 17, "D  Toggle Admin Status")
+    gpu.setForeground(colors.text)
+    gpu.set(20, 18, "LOAN MANAGEMENT")
+    gpu.setForeground(colors.textDim)
+    gpu.set(20, 19, "7  View All Loans")
+    gpu.set(20, 20, "8  View Locked Accounts")
+    gpu.set(20, 21, "9  Forgive Loan")
+    gpu.set(20, 22, "A  Adjust Credit Score")
+    gpu.setForeground(colors.text)
+    gpu.set(20, 23, "SYSTEM")
+    gpu.setForeground(colors.textDim)
+    gpu.set(20, 24, "B  Change Admin Password")
+    gpu.set(20, 25, "C  View RAID Drives")
+    gpu.setForeground(colors.warning)
+    gpu.set(20, 26, "0  Exit Admin Mode")
+    
+    local pendingCount = 0
+    for _, app in pairs(pendingLoans) do
+        if app.status == "pending" then pendingCount = pendingCount + 1 end
+    end
+    
+    drawFooter("Admin Tools • Loans: " .. stats.activeLoans .. " • Pending: " .. pendingCount)
     local _, _, char = event.pull("key_down")
     return char
 end
@@ -1355,6 +1637,302 @@ local function adminViewRAIDUI()
     event.pull("key_down")
 end
 
+local function adminViewAllLoansUI()
+    clearScreen()
+    drawHeader("◆ ALL LOANS ◆", "Total: " .. stats.totalLoans .. " | Active: " .. stats.activeLoans, true)
+    
+    local loanList = adminViewAllLoans()
+    
+    gpu.setForeground(colors.textDim)
+    gpu.set(2, 5, "Loan ID")
+    gpu.set(15, 5, "User")
+    gpu.set(30, 5, "Principal")
+    gpu.set(43, 5, "Remaining")
+    gpu.set(56, 5, "Status")
+    gpu.set(68, 5, "Days")
+    
+    gpu.setForeground(colors.border)
+    for i = 1, 76 do gpu.set(2 + i, 6, "─") end
+    
+    local y = 7
+    for i = 1, math.min(16, #loanList) do
+        local loan = loanList[i]
+        
+        gpu.setForeground(colors.text)
+        gpu.set(2, y, loan.loanId)
+        
+        local username = loan.username
+        if #username > 12 then username = username:sub(1, 9) .. "..." end
+        gpu.set(15, y, username)
+        
+        gpu.setForeground(colors.textDim)
+        gpu.set(30, y, string.format("%.2f", loan.principal))
+        gpu.set(43, y, string.format("%.2f", loan.remaining))
+        
+        -- Color code status
+        local statusColor = colors.textDim
+        if loan.status == "active" then 
+            statusColor = colors.success
+            if os.time() > loan.dueDate then statusColor = colors.error end
+        elseif loan.status == "paid" then statusColor = colors.good
+        elseif loan.status == "default" then statusColor = colors.error
+        elseif loan.status == "forgiven" then statusColor = colors.warning
+        end
+        gpu.setForeground(statusColor)
+        gpu.set(56, y, loan.status)
+        
+        -- Days calculation
+        gpu.setForeground(colors.textDim)
+        if loan.status == "active" then
+            local daysRemaining = math.floor((loan.dueDate - os.time()) / 86400)
+            if daysRemaining < 0 then
+                gpu.setForeground(colors.error)
+                gpu.set(68, y, string.format("-%d", -daysRemaining))
+            else
+                gpu.set(68, y, tostring(daysRemaining))
+            end
+        else
+            gpu.set(68, y, "-")
+        end
+        
+        y = y + 1
+    end
+    
+    if #loanList > 16 then
+        gpu.setForeground(colors.textDim)
+        gpu.set(2, y + 1, "Showing 16 of " .. #loanList .. " loans")
+    end
+    
+    drawFooter("Press any key to return...")
+    event.pull("key_down")
+end
+
+local function adminViewLockedAccountsUI()
+    clearScreen()
+    drawHeader("◆ LOCKED ACCOUNTS ◆", "Auto-locked due to overdue loans", true)
+    
+    local lockedAccounts = adminViewLockedAccounts()
+    
+    if #lockedAccounts == 0 then
+        drawBox(20, 10, 40, 5, colors.bg)
+        gpu.setForeground(colors.success)
+        centerText(12, "✓ No locked accounts")
+        gpu.setForeground(colors.textDim)
+        centerText(14, "Press any key to return")
+    else
+        gpu.setForeground(colors.textDim)
+        gpu.set(2, 5, "Username")
+        gpu.set(20, 5, "Lock Reason")
+        gpu.set(50, 5, "Days")
+        gpu.set(60, 5, "Balance")
+        
+        gpu.setForeground(colors.border)
+        for i = 1, 76 do gpu.set(2 + i, 6, "─") end
+        
+        local y = 7
+        for i = 1, math.min(15, #lockedAccounts) do
+            local acc = lockedAccounts[i]
+            
+            gpu.setForeground(colors.error)
+            local username = acc.username
+            if #username > 16 then username = username:sub(1, 13) .. "..." end
+            gpu.set(2, y, username)
+            
+            gpu.setForeground(colors.textDim)
+            local reason = acc.lockReason
+            if #reason > 28 then reason = reason:sub(1, 25) .. "..." end
+            gpu.set(20, y, reason)
+            
+            gpu.setForeground(colors.warning)
+            gpu.set(50, y, tostring(acc.daysLocked))
+            
+            gpu.setForeground(colors.text)
+            gpu.set(60, y, string.format("%.2f", acc.balance))
+            
+            y = y + 1
+        end
+        
+        if #lockedAccounts > 15 then
+            gpu.setForeground(colors.textDim)
+            gpu.set(2, y + 1, "Showing 15 of " .. #lockedAccounts .. " locked accounts")
+        end
+    end
+    
+    drawFooter("Press any key to return...")
+    event.pull("key_down")
+end
+
+local function adminForgiveLoanUI()
+    clearScreen()
+    drawHeader("◆ FORGIVE LOAN ◆", "Clear loan debt and unlock account", true)
+    
+    drawBox(15, 7, 50, 12, colors.bg)
+    
+    gpu.setForeground(colors.warning)
+    gpu.set(17, 8, "⚠ This will:")
+    gpu.setForeground(colors.textDim)
+    gpu.set(17, 9, "  • Set remaining balance to 0")
+    gpu.set(17, 10, "  • Mark loan as 'forgiven'")
+    gpu.set(17, 11, "  • Unlock account if locked for this loan")
+    gpu.set(17, 12, "  • Add credit history event")
+    
+    gpu.setForeground(colors.text)
+    local loanId = input("Loan ID: ", 15, false, 15)
+    
+    if not loanId or loanId == "" then
+        showStatus("Cancelled", "warning")
+        os.sleep(1)
+        return
+    end
+    
+    local loan = loanIndex[loanId]
+    if not loan then
+        showStatus("✗ Loan not found", "error")
+        os.sleep(2)
+        return
+    end
+    
+    gpu.setForeground(colors.textDim)
+    gpu.set(17, 17, "User: " .. loan.username)
+    gpu.set(17, 18, "Remaining: " .. string.format("%.2f CR", loan.remaining))
+    
+    gpu.setForeground(colors.warning)
+    gpu.set(17, 20, "Confirm forgiveness? (Y/N)")
+    
+    local _, _, char = event.pull("key_down")
+    
+    if char == string.byte('y') or char == string.byte('Y') then
+        local ok, msg = adminForgiveLoan(loanId)
+        if ok then
+            showStatus("✓ Loan forgiven: " .. loanId, "success")
+        else
+            showStatus("✗ " .. msg, "error")
+        end
+        os.sleep(2)
+    else
+        showStatus("Cancelled", "warning")
+        os.sleep(1)
+    end
+end
+
+local function adminAdjustCreditUI()
+    clearScreen()
+    drawHeader("◆ ADJUST CREDIT SCORE ◆", "Manual credit score modification", true)
+    
+    drawBox(15, 7, 50, 14, colors.bg)
+    
+    gpu.setForeground(colors.warning)
+    gpu.set(17, 8, "⚠ Use with caution!")
+    gpu.setForeground(colors.textDim)
+    gpu.set(17, 9, "  Valid range: 300-850")
+    
+    gpu.setForeground(colors.text)
+    local username = input("Username:   ", 12, false, 25)
+    
+    if not username or username == "" then
+        showStatus("Cancelled", "warning")
+        os.sleep(1)
+        return
+    end
+    
+    local acc = getAccount(username)
+    if not acc then
+        showStatus("✗ Account not found", "error")
+        os.sleep(2)
+        return
+    end
+    
+    local credit = creditScores[username]
+    if not credit then
+        initializeCreditScore(username)
+        credit = creditScores[username]
+    end
+    
+    gpu.setForeground(colors.textDim)
+    local currentRating = getCreditRating(credit.score)
+    gpu.set(17, 14, "Current: " .. credit.score .. " (" .. currentRating .. ")")
+    
+    gpu.setForeground(colors.text)
+    local newScoreStr = input("New Score:  ", 16, false, 5)
+    local newScore = tonumber(newScoreStr)
+    
+    if not newScore or newScore < 300 or newScore > 850 then
+        showStatus("✗ Invalid score (must be 300-850)", "error")
+        os.sleep(2)
+        return
+    end
+    
+    local reason = input("Reason:     ", 18, false, 30)
+    
+    gpu.setForeground(colors.warning)
+    gpu.set(17, 20, "Confirm adjustment? (Y/N)")
+    
+    local _, _, char = event.pull("key_down")
+    
+    if char == string.byte('y') or char == string.byte('Y') then
+        local ok, msg = adminAdjustCredit(username, newScore, reason)
+        if ok then
+            showStatus("✓ Credit score adjusted", "success")
+        else
+            showStatus("✗ " .. msg, "error")
+        end
+        os.sleep(2)
+    else
+        showStatus("Cancelled", "warning")
+        os.sleep(1)
+    end
+end
+
+local function adminToggleAdminUI()
+    clearScreen()
+    drawHeader("◆ TOGGLE ADMIN STATUS ◆", "Grant or revoke admin privileges", true)
+    
+    drawBox(15, 7, 50, 10, colors.bg)
+    
+    gpu.setForeground(colors.warning)
+    gpu.set(17, 8, "⚠ Admin users can approve loans and access admin panel!")
+    
+    gpu.setForeground(colors.text)
+    local username = input("Username: ", 12, false, 25)
+    
+    if not username or username == "" then
+        showStatus("Cancelled", "warning")
+        os.sleep(1)
+        return
+    end
+    
+    local acc = getAccount(username)
+    if not acc then
+        showStatus("✗ Account not found", "error")
+        os.sleep(2)
+        return
+    end
+    
+    gpu.setForeground(colors.textDim)
+    local currentStatus = acc.isAdmin and "YES" or "NO"
+    local newStatus = acc.isAdmin and "NO" or "YES"
+    gpu.set(17, 14, "Current admin status: " .. currentStatus)
+    gpu.set(17, 15, "New admin status:     " .. newStatus)
+    
+    gpu.setForeground(colors.warning)
+    gpu.set(17, 17, "Confirm change? (Y/N)")
+    
+    local _, _, char = event.pull("key_down")
+    
+    if char == string.byte('y') or char == string.byte('Y') then
+        local ok, msg = adminToggleAdminStatus(username)
+        if ok then
+            showStatus("✓ Admin status updated", "success")
+        else
+            showStatus("✗ " .. msg, "error")
+        end
+        os.sleep(2)
+    else
+        showStatus("Cancelled", "warning")
+        os.sleep(1)
+    end
+end
+
 -- Network message handler
 local function handleMessage(eventType, _, sender, port, distance, message)
     if port ~= PORT then return end
@@ -1399,10 +1977,11 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                     acc.lastActivity = os.time()
                     response.success = true
                     response.balance = acc.balance
+                    response.isAdmin = acc.isAdmin or false
                     response.creditScore = creditScores[data.username] and creditScores[data.username].score or 650
                     response.creditRating = getCreditRating(response.creditScore)
                     response.message = "Login successful"
-                    log("Login: " .. data.username, "AUTH")
+                    log("Login: " .. data.username .. (acc.isAdmin and " (ADMIN)" or ""), "AUTH")
                     saveAccounts()
                 end
             end
@@ -1486,14 +2065,21 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             response.success = false
             response.message = "Authentication failed"
         else
-            local ok, loanIdOrMsg, loan = createLoan(data.username, data.amount, data.term)
+            local ok, pendingIdOrMsg, application = submitLoanApplication(data.username, data.amount, data.term)
             response.success = ok
             if ok then
-                response.loanId = loanIdOrMsg
-                response.balance = getAccount(data.username).balance
-                response.loan = {principal = loan.principal, interest = loan.interest, totalOwed = loan.totalOwed, dueDate = loan.dueDate}
+                response.pendingId = pendingIdOrMsg
+                response.message = "Loan application submitted. Awaiting admin approval."
+                response.application = {
+                    pendingId = pendingIdOrMsg,
+                    amount = application.amount,
+                    interest = application.interest,
+                    totalOwed = application.totalOwed,
+                    termDays = application.termDays,
+                    status = "pending"
+                }
             else
-                response.message = loanIdOrMsg
+                response.message = pendingIdOrMsg
             end
         end
     elseif data.command == "get_my_loans" then
@@ -1531,6 +2117,64 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                 response.balance = getAccount(data.username).balance
             else
                 response.message = paidOrMsg
+            end
+        end
+    elseif data.command == "get_pending_loans" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                response.success = true
+                response.pendingLoans = getPendingLoans()
+            end
+        end
+    elseif data.command == "approve_loan" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                local ok, loanIdOrMsg, loan = approveLoanApplication(data.pendingId, data.username)
+                response.success = ok
+                if ok then
+                    response.loanId = loanIdOrMsg
+                    response.message = "Loan approved"
+                else
+                    response.message = loanIdOrMsg
+                end
+            end
+        end
+    elseif data.command == "deny_loan" then
+        if not validateSession(data.username, relayAddress) then
+            response.success = false
+            response.message = "Session invalid"
+        elseif not verifyPassword(data.username, data.password) then
+            response.success = false
+            response.message = "Authentication failed"
+        else
+            local acc = getAccount(data.username)
+            if not acc or not acc.isAdmin then
+                response.success = false
+                response.message = "Admin access required"
+            else
+                local ok, msg = denyLoanApplication(data.pendingId, data.username, data.reason)
+                response.success = ok
+                response.message = msg
             end
         end
     elseif data.command == "list_accounts" then
@@ -1588,9 +2232,14 @@ local function handleKeyPress(eventType, _, _, code)
                     elseif choice == string.byte('4') then adminLockUnlockUI()
                     elseif choice == string.byte('5') then adminResetPasswordUI()
                     elseif choice == string.byte('6') then adminViewAllAccountsUI()
-                    elseif choice == string.byte('7') then adminChangePasswordUI()
-                    elseif choice == string.byte('8') then adminViewRAIDUI()
-                    elseif choice == string.byte('9') then
+                    elseif choice == string.byte('7') then adminViewAllLoansUI()
+                    elseif choice == string.byte('8') then adminViewLockedAccountsUI()
+                    elseif choice == string.byte('9') then adminForgiveLoanUI()
+                    elseif choice == string.byte('a') or choice == string.byte('A') then adminAdjustCreditUI()
+                    elseif choice == string.byte('b') or choice == string.byte('B') then adminChangePasswordUI()
+                    elseif choice == string.byte('c') or choice == string.byte('C') then adminViewRAIDUI()
+                    elseif choice == string.byte('d') or choice == string.byte('D') then adminToggleAdminUI()
+                    elseif choice == string.byte('0') then
                         adminMode = false
                         adminAuthenticated = false
                         log("Admin mode exited", "ADMIN")
@@ -1623,6 +2272,8 @@ local function main()
     end
     loadCreditScores()
     loadLoans()
+    loadPendingLoans()
+    print("Loaded " .. (function() local count = 0 for _ in pairs(pendingLoans) do count = count + 1 end return count end)() .. " pending loan applications")
     modem.open(PORT)
     modem.setStrength(400)
     print("Listening on port " .. PORT)
