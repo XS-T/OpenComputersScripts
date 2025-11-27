@@ -459,7 +459,7 @@ local function applyForLoan()
     end
     showStatus("⟳ Processing loan application...", "info")
     local response = sendAndWait({command = "apply_loan", username = username, password = password, amount = amount, term = term})
-    if response.success then
+    if response.success and response then
         clearScreen()
         drawHeader("◆ LOAN APPLICATION SUBMITTED ◆", username)
         drawBox(15, 8, 50, 10, colors.bg)
