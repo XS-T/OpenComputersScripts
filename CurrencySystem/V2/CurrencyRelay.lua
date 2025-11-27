@@ -25,8 +25,8 @@ local modem = component.modem
 local data = component.data
 
 -- Encryption key (must match server)
-local ENCRYPTION_KEY_BASE = "RelayServerSecureKey2025"
-local ENCRYPTION_KEY = ENCRYPTION_KEY_BASE .. string.rep("\0", 32 - #ENCRYPTION_KEY_BASE)
+local ENCRYPTION_KEY_BASE = "e2x36U7W0ZmUVjWH"
+--local ENCRYPTION_KEY = ENCRYPTION_KEY_BASE .. string.rep("\0", 32 - #ENCRYPTION_KEY_BASE)
 
 -- Encryption functions
 local function encryptMessage(message)
