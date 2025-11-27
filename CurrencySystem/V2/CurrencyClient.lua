@@ -608,6 +608,63 @@ local function denyLoan(pendingId, reason)
     return sendAndWait({command = "deny_loan", username = username, password = password, pendingId = pendingId, reason = reason})
 end
 
+local function adminCreateAccount(newUsername, newPassword, initialBalance)
+    return sendAndWait({command = "admin_create_account", username = username, password = password, 
+                       newUsername = newUsername, newPassword = newPassword, initialBalance = initialBalance})
+end
+
+local function adminDeleteAccount(targetUsername)
+    return sendAndWait({command = "admin_delete_account", username = username, password = password, 
+                       targetUsername = targetUsername})
+end
+
+local function adminSetBalance(targetUsername, newBalance)
+    return sendAndWait({command = "admin_set_balance", username = username, password = password, 
+                       targetUsername = targetUsername, newBalance = newBalance})
+end
+
+local function adminLockAccount(targetUsername)
+    return sendAndWait({command = "admin_lock_account", username = username, password = password, 
+                       targetUsername = targetUsername})
+end
+
+local function adminUnlockAccount(targetUsername)
+    return sendAndWait({command = "admin_unlock_account", username = username, password = password, 
+                       targetUsername = targetUsername})
+end
+
+local function adminResetPassword(targetUsername, newPassword)
+    return sendAndWait({command = "admin_reset_password", username = username, password = password, 
+                       targetUsername = targetUsername, newPassword = newPassword})
+end
+
+local function adminViewAllAccounts()
+    return sendAndWait({command = "admin_view_accounts", username = username, password = password})
+end
+
+local function adminToggleAdmin(targetUsername)
+    return sendAndWait({command = "admin_toggle_admin", username = username, password = password, 
+                       targetUsername = targetUsername})
+end
+
+local function adminViewAllLoans()
+    return sendAndWait({command = "admin_view_loans", username = username, password = password})
+end
+
+local function adminViewLockedAccounts()
+    return sendAndWait({command = "admin_view_locked", username = username, password = password})
+end
+
+local function adminForgiveLoan(loanId)
+    return sendAndWait({command = "admin_forgive_loan", username = username, password = password, 
+                       loanId = loanId})
+end
+
+local function adminAdjustCredit(targetUsername, newScore, reason)
+    return sendAndWait({command = "admin_adjust_credit", username = username, password = password, 
+                       targetUsername = targetUsername, newScore = newScore, reason = reason})
+end
+
 local function viewPendingLoansUI()
     clearScreen()
     drawHeader("◆ PENDING LOAN APPLICATIONS ◆", "Review and approve/deny")
@@ -781,69 +838,388 @@ local function adminPanel()
     
     while true do
         clearScreen()
-        drawHeader("◆ ADMIN PANEL ◆", "Administrative Functions")
+        drawHeader("◆ ADMIN PANEL ◆", "Server Management Console")
         
-        drawBox(20, 8, 40, 12, colors.bg)
-        
+        drawBox(10, 5, 60, 16, colors.bg)
         gpu.setForeground(colors.warning)
-        gpu.set(22, 9, "⭐ ADMIN ACCESS ⭐")
+        gpu.set(12, 6, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        gpu.setForeground(colors.textDim)
+        gpu.set(12, 7, "  Administrative Tools")
+        gpu.setForeground(colors.warning)
+        gpu.set(12, 8, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         
+        -- Left Column - Account Management
         gpu.setForeground(colors.text)
-        gpu.set(25, 12, "1  View Pending Loans")
+        gpu.set(13, 10, "ACCOUNT MANAGEMENT")
+        gpu.setForeground(colors.textDim)
+        gpu.set(13, 11, "1  Create Account")
+        gpu.set(13, 12, "2  Delete Account")
+        gpu.set(13, 13, "3  Set Balance")
+        gpu.set(13, 14, "4  Lock/Unlock")
+        gpu.set(13, 15, "5  Reset Password")
+        gpu.set(13, 16, "6  View All")
+        gpu.set(13, 17, "D  Toggle Admin")
+        
+        -- Right Column - Loan Management & System
+        gpu.setForeground(colors.text)
+        gpu.set(40, 10, "LOAN MANAGEMENT")
+        gpu.setForeground(colors.textDim)
+        gpu.set(40, 11, "7  View Pending")
         
         local pending = getPendingLoans()
         local pendingCount = #pending
         if pendingCount > 0 then
             gpu.setForeground(colors.warning)
-            gpu.set(50, 12, "(" .. pendingCount .. ")")
+            gpu.set(58, 11, "(" .. pendingCount .. ")")
+            gpu.setForeground(colors.textDim)
         end
         
-        gpu.setForeground(colors.textDim)
-        gpu.set(25, 14, "2  View Server Stats")
-        gpu.set(25, 16, "3  Admin Help")
+        gpu.set(40, 12, "8  View All Loans")
+        gpu.set(40, 13, "9  View Locked")
+        gpu.set(40, 14, "A  Forgive Loan")
+        gpu.set(40, 15, "B  Adjust Credit")
         
-        gpu.setForeground(colors.text)
-        gpu.set(25, 18, "0  Back to Main Menu")
+        gpu.setForeground(colors.warning)
+        gpu.set(13, 19, "0  Back to Main Menu")
         
         drawFooter("Admin Panel • User: " .. username .. " • Pending: " .. pendingCount)
         
         local _, _, char = event.pull("key_down")
         
         if char == string.byte('1') then
-            viewPendingLoansUI()
+            -- Create Account
+            clearScreen()
+            drawHeader("◆ CREATE ACCOUNT ◆", "Add new user")
+            drawBox(20, 8, 40, 10, colors.bg)
+            gpu.setForeground(colors.text)
+            local newUser = input("Username: ", 10, false, 20)
+            if newUser and newUser ~= "" then
+                local newPass = input("Password: ", 12, true, 20)
+                if newPass and newPass ~= "" then
+                    local balStr = input("Balance:  ", 14, false, 10)
+                    local bal = tonumber(balStr) or 100
+                    showStatus("⟳ Creating account...", "info")
+                    local resp = adminCreateAccount(newUser, newPass, bal)
+                    if resp and resp.success then
+                        showStatus("✓ Account created: " .. newUser, "success")
+                    else
+                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                    end
+                    os.sleep(2)
+                end
+            end
         elseif char == string.byte('2') then
+            -- Delete Account
             clearScreen()
-            drawHeader("◆ SERVER STATISTICS ◆")
+            drawHeader("◆ DELETE ACCOUNT ◆", "Remove user")
             drawBox(20, 8, 40, 8, colors.bg)
-            gpu.setForeground(colors.textDim)
-            centerText(10, "Use server F5 admin panel")
-            centerText(11, "for full server statistics")
-            centerText(13, "and management tools")
+            gpu.setForeground(colors.warning)
+            centerText(10, "⚠ This cannot be undone!")
             gpu.setForeground(colors.text)
-            centerText(15, "Press any key to return")
-            drawFooter("Admin Panel")
-            event.pull("key_down")
+            local targetUser = input("Username: ", 12, false, 20)
+            if targetUser and targetUser ~= "" then
+                gpu.setForeground(colors.error)
+                gpu.set(22, 15, "Confirm deletion? (Y/N)")
+                local _, _, confirmChar = event.pull("key_down")
+                if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
+                    showStatus("⟳ Deleting account...", "info")
+                    local resp = adminDeleteAccount(targetUser)
+                    if resp and resp.success then
+                        showStatus("✓ Account deleted", "success")
+                    else
+                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                    end
+                    os.sleep(2)
+                end
+            end
         elseif char == string.byte('3') then
+            -- Set Balance
             clearScreen()
-            drawHeader("◆ ADMIN HELP ◆")
-            drawBox(10, 6, 60, 14, colors.bg)
+            drawHeader("◆ SET BALANCE ◆", "Modify account balance")
+            drawBox(20, 8, 40, 8, colors.bg)
             gpu.setForeground(colors.text)
-            gpu.set(12, 7, "Client Admin Functions:")
-            gpu.setForeground(colors.textDim)
-            gpu.set(12, 9, "• View Pending Loans - Review loan applications")
-            gpu.set(12, 10, "• Approve/Deny - Accept or reject applications")
-            gpu.set(12, 11, "• Notifications - Get alerts for new requests")
+            local targetUser = input("Username: ", 10, false, 20)
+            if targetUser and targetUser ~= "" then
+                local balStr = input("Balance:  ", 12, false, 10)
+                local newBal = tonumber(balStr)
+                if newBal then
+                    showStatus("⟳ Updating balance...", "info")
+                    local resp = adminSetBalance(targetUser, newBal)
+                    if resp and resp.success then
+                        showStatus("✓ Balance updated", "success")
+                    else
+                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                    end
+                    os.sleep(2)
+                end
+            end
+        elseif char == string.byte('4') then
+            -- Lock/Unlock Account
+            clearScreen()
+            drawHeader("◆ LOCK/UNLOCK ACCOUNT ◆")
+            drawBox(20, 8, 40, 10, colors.bg)
             gpu.setForeground(colors.text)
-            gpu.set(12, 13, "Server Admin Panel (F5 on server):")
-            gpu.setForeground(colors.textDim)
-            gpu.set(12, 14, "• Full account management")
-            gpu.set(12, 15, "• Loan forgiveness & credit adjustment")
-            gpu.set(12, 16, "• System configuration & RAID")
-            gpu.set(12, 17, "• Toggle admin status for users")
+            local targetUser = input("Username: ", 10, false, 20)
+            if targetUser and targetUser ~= "" then
+                gpu.setForeground(colors.textDim)
+                gpu.set(22, 13, "1  Lock Account")
+                gpu.set(22, 14, "2  Unlock Account")
+                local _, _, actionChar = event.pull("key_down")
+                if actionChar == string.byte('1') then
+                    showStatus("⟳ Locking account...", "info")
+                    local resp = adminLockAccount(targetUser)
+                    if resp and resp.success then
+                        showStatus("✓ Account locked", "success")
+                    else
+                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                    end
+                    os.sleep(2)
+                elseif actionChar == string.byte('2') then
+                    showStatus("⟳ Unlocking account...", "info")
+                    local resp = adminUnlockAccount(targetUser)
+                    if resp and resp.success then
+                        showStatus("✓ Account unlocked", "success")
+                    else
+                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                    end
+                    os.sleep(2)
+                end
+            end
+        elseif char == string.byte('5') then
+            -- Reset Password
+            clearScreen()
+            drawHeader("◆ RESET PASSWORD ◆", "Change user password")
+            drawBox(20, 8, 40, 8, colors.bg)
             gpu.setForeground(colors.text)
-            centerText(19, "Press any key to return")
-            drawFooter("Admin Panel • Help")
-            event.pull("key_down")
+            local targetUser = input("Username:     ", 10, false, 20)
+            if targetUser and targetUser ~= "" then
+                local newPass = input("New Password: ", 12, true, 20)
+                if newPass and newPass ~= "" then
+                    showStatus("⟳ Resetting password...", "info")
+                    local resp = adminResetPassword(targetUser, newPass)
+                    if resp and resp.success then
+                        showStatus("✓ Password reset", "success")
+                    else
+                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                    end
+                    os.sleep(2)
+                end
+            end
+        elseif char == string.byte('6') then
+            -- View All Accounts
+            clearScreen()
+            drawHeader("◆ ALL ACCOUNTS ◆", "User list")
+            showStatus("⟳ Loading accounts...", "info")
+            local resp = adminViewAllAccounts()
+            if resp and resp.success and resp.accounts then
+                clearScreen()
+                drawHeader("◆ ALL ACCOUNTS ◆", "Total: " .. #resp.accounts)
+                gpu.setForeground(colors.textDim)
+                gpu.set(2, 5, "Username")
+                gpu.set(25, 5, "Balance")
+                gpu.set(40, 5, "Status")
+                gpu.set(55, 5, "Admin")
+                gpu.setForeground(colors.border)
+                for i = 1, 76 do gpu.set(2 + i, 6, "─") end
+                local y = 7
+                for i = 1, math.min(15, #resp.accounts) do
+                    local acc = resp.accounts[i]
+                    gpu.setForeground(colors.text)
+                    local name = acc.name
+                    if #name > 20 then name = name:sub(1, 17) .. "..." end
+                    gpu.set(2, y, name)
+                    gpu.setForeground(colors.textDim)
+                    gpu.set(25, y, string.format("%.2f", acc.balance))
+                    if acc.locked then
+                        gpu.setForeground(colors.error)
+                        gpu.set(40, y, "LOCKED")
+                    elseif acc.online then
+                        gpu.setForeground(colors.success)
+                        gpu.set(40, y, "Online")
+                    else
+                        gpu.setForeground(colors.textDim)
+                        gpu.set(40, y, "Offline")
+                    end
+                    if acc.isAdmin then
+                        gpu.setForeground(colors.warning)
+                        gpu.set(55, y, "YES")
+                    else
+                        gpu.setForeground(colors.textDim)
+                        gpu.set(55, y, "No")
+                    end
+                    y = y + 1
+                end
+                drawFooter("Press any key to return...")
+                event.pull("key_down")
+            else
+                showStatus("✗ Failed to load accounts", "error")
+                os.sleep(2)
+            end
+        elseif char == string.byte('d') or char == string.byte('D') then
+            -- Toggle Admin
+            clearScreen()
+            drawHeader("◆ TOGGLE ADMIN STATUS ◆", "Grant/revoke admin privileges")
+            drawBox(20, 8, 40, 8, colors.bg)
+            gpu.setForeground(colors.warning)
+            centerText(10, "⚠ Admin users can manage server!")
+            gpu.setForeground(colors.text)
+            local targetUser = input("Username: ", 12, false, 20)
+            if targetUser and targetUser ~= "" then
+                gpu.setForeground(colors.warning)
+                gpu.set(22, 15, "Confirm toggle? (Y/N)")
+                local _, _, confirmChar = event.pull("key_down")
+                if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
+                    showStatus("⟳ Toggling admin status...", "info")
+                    local resp = adminToggleAdmin(targetUser)
+                    if resp and resp.success then
+                        showStatus("✓ Admin status toggled", "success")
+                    else
+                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                    end
+                    os.sleep(2)
+                end
+            end
+        elseif char == string.byte('7') then
+            viewPendingLoansUI()
+        elseif char == string.byte('8') then
+            -- View All Loans
+            clearScreen()
+            drawHeader("◆ ALL LOANS ◆", "System-wide loans")
+            showStatus("⟳ Loading loans...", "info")
+            local resp = adminViewAllLoans()
+            if resp and resp.success and resp.loans then
+                clearScreen()
+                drawHeader("◆ ALL LOANS ◆", "Total: " .. #resp.loans)
+                gpu.setForeground(colors.textDim)
+                gpu.set(2, 5, "Loan ID")
+                gpu.set(15, 5, "User")
+                gpu.set(30, 5, "Principal")
+                gpu.set(43, 5, "Remaining")
+                gpu.set(56, 5, "Status")
+                gpu.setForeground(colors.border)
+                for i = 1, 76 do gpu.set(2 + i, 6, "─") end
+                local y = 7
+                for i = 1, math.min(15, #resp.loans) do
+                    local loan = resp.loans[i]
+                    gpu.setForeground(colors.text)
+                    gpu.set(2, y, loan.loanId)
+                    local uname = loan.username
+                    if #uname > 12 then uname = uname:sub(1, 9) .. "..." end
+                    gpu.set(15, y, uname)
+                    gpu.setForeground(colors.textDim)
+                    gpu.set(30, y, string.format("%.2f", loan.principal))
+                    gpu.set(43, y, string.format("%.2f", loan.remaining))
+                    if loan.status == "active" then
+                        gpu.setForeground(colors.success)
+                    elseif loan.status == "paid" then
+                        gpu.setForeground(colors.good)
+                    else
+                        gpu.setForeground(colors.error)
+                    end
+                    gpu.set(56, y, loan.status)
+                    y = y + 1
+                end
+                drawFooter("Press any key to return...")
+                event.pull("key_down")
+            else
+                showStatus("✗ Failed to load loans", "error")
+                os.sleep(2)
+            end
+        elseif char == string.byte('9') then
+            -- View Locked Accounts
+            clearScreen()
+            drawHeader("◆ LOCKED ACCOUNTS ◆", "Overdue loans")
+            showStatus("⟳ Loading locked accounts...", "info")
+            local resp = adminViewLockedAccounts()
+            if resp and resp.success and resp.lockedAccounts then
+                if #resp.lockedAccounts == 0 then
+                    clearScreen()
+                    drawHeader("◆ LOCKED ACCOUNTS ◆")
+                    drawBox(20, 10, 40, 5, colors.bg)
+                    gpu.setForeground(colors.success)
+                    centerText(12, "✓ No locked accounts")
+                    drawFooter("Press any key to return...")
+                    event.pull("key_down")
+                else
+                    clearScreen()
+                    drawHeader("◆ LOCKED ACCOUNTS ◆", "Total: " .. #resp.lockedAccounts)
+                    gpu.setForeground(colors.textDim)
+                    gpu.set(2, 5, "Username")
+                    gpu.set(20, 5, "Lock Reason")
+                    gpu.set(50, 5, "Days")
+                    gpu.setForeground(colors.border)
+                    for i = 1, 76 do gpu.set(2 + i, 6, "─") end
+                    local y = 7
+                    for i = 1, math.min(15, #resp.lockedAccounts) do
+                        local acc = resp.lockedAccounts[i]
+                        gpu.setForeground(colors.error)
+                        gpu.set(2, y, acc.username)
+                        gpu.setForeground(colors.textDim)
+                        local reason = acc.lockReason
+                        if #reason > 28 then reason = reason:sub(1, 25) .. "..." end
+                        gpu.set(20, y, reason)
+                        gpu.setForeground(colors.warning)
+                        gpu.set(50, y, tostring(acc.daysLocked))
+                        y = y + 1
+                    end
+                    drawFooter("Press any key to return...")
+                    event.pull("key_down")
+                end
+            else
+                showStatus("✗ Failed to load", "error")
+                os.sleep(2)
+            end
+        elseif char == string.byte('a') or char == string.byte('A') then
+            -- Forgive Loan
+            clearScreen()
+            drawHeader("◆ FORGIVE LOAN ◆", "Clear loan debt")
+            drawBox(20, 8, 40, 8, colors.bg)
+            gpu.setForeground(colors.warning)
+            centerText(10, "⚠ This clears the debt completely!")
+            gpu.setForeground(colors.text)
+            local loanId = input("Loan ID: ", 12, false, 15)
+            if loanId and loanId ~= "" then
+                gpu.setForeground(colors.warning)
+                gpu.set(22, 15, "Confirm forgiveness? (Y/N)")
+                local _, _, confirmChar = event.pull("key_down")
+                if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
+                    showStatus("⟳ Forgiving loan...", "info")
+                    local resp = adminForgiveLoan(loanId)
+                    if resp and resp.success then
+                        showStatus("✓ Loan forgiven", "success")
+                    else
+                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                    end
+                    os.sleep(2)
+                end
+            end
+        elseif char == string.byte('b') or char == string.byte('B') then
+            -- Adjust Credit Score
+            clearScreen()
+            drawHeader("◆ ADJUST CREDIT SCORE ◆", "Manual credit modification")
+            drawBox(20, 8, 40, 10, colors.bg)
+            gpu.setForeground(colors.warning)
+            centerText(10, "⚠ Valid range: 300-850")
+            gpu.setForeground(colors.text)
+            local targetUser = input("Username:  ", 12, false, 20)
+            if targetUser and targetUser ~= "" then
+                local scoreStr = input("New Score: ", 14, false, 5)
+                local newScore = tonumber(scoreStr)
+                if newScore and newScore >= 300 and newScore <= 850 then
+                    local reason = input("Reason:    ", 16, false, 30)
+                    showStatus("⟳ Adjusting credit score...", "info")
+                    local resp = adminAdjustCredit(targetUser, newScore, reason)
+                    if resp and resp.success then
+                        showStatus("✓ Credit score adjusted", "success")
+                    else
+                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                    end
+                    os.sleep(2)
+                else
+                    showStatus("✗ Invalid score (300-850)", "error")
+                    os.sleep(2)
+                end
+            end
         elseif char == string.byte('0') then
             return
         end
