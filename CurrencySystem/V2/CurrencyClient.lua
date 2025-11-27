@@ -22,8 +22,9 @@ local balance = 0
 local loggedIn = false
 local relayConnected = false
 local clientId = tunnel.address
-local creditScore = 650
-local creditRating = "FAIR"
+local creditScore = nil
+local creditRating = nil
+local isAdmin = false  -- For UI display ONLY - server still verifies everything
 
 local w, h = gpu.getResolution()
 gpu.setResolution(80, 25)
@@ -277,11 +278,12 @@ local function loginScreen()
     if response and response.success then
         username = user
         password = pass
-        balance = response.balance or 0
-        creditScore = response.creditScore or 650
-        creditRating = response.creditRating or "FAIR"
+        balance = response.balance
+        creditScore = response.creditScore
+        creditRating = response.creditRating
+        isAdmin = response.isAdmin or false  -- For UI display only
         loggedIn = true
-        showStatus("✓ Login successful!", "success")
+        showStatus("✓ Login successful!" .. (isAdmin and " (ADMIN)" or ""), "success")
         os.sleep(1)
         return true
     elseif response and response.locked then
@@ -1197,7 +1199,7 @@ local function adminPanel()
             -- Adjust Credit Score
             clearScreen()
             drawHeader("◆ ADJUST CREDIT SCORE ◆", "Manual credit modification")
-            drawBox(20, 8, 40, 10, colors.bg)
+            drawBox(20, 8, 40, 11, colors.bg)
             gpu.setForeground(colors.warning)
             centerText(10, "⚠ Valid range: 300-850")
             gpu.setForeground(colors.text)
@@ -1207,16 +1209,24 @@ local function adminPanel()
                 local newScore = tonumber(scoreStr)
                 if newScore and newScore >= 300 and newScore <= 850 then
                     local reason = input("Reason:    ", 16, false, 30)
-                    showStatus("⟳ Adjusting credit score...", "info")
-                    local resp = adminAdjustCredit(targetUser, newScore, reason)
-                    if resp and resp.success then
-                        showStatus("✓ Credit score adjusted", "success")
+                    gpu.setForeground(colors.warning)
+                    gpu.set(22, 18, "Confirm adjustment? (Y/N)")
+                    local _, _, confirmChar = event.pull("key_down")
+                    if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
+                        showStatus("⟳ Adjusting credit score...", "info")
+                        local resp = adminAdjustCredit(targetUser, newScore, reason)
+                        if resp and resp.success then
+                            showStatus("✓ Credit score adjusted to " .. newScore, "success")
+                        else
+                            showStatus("✗ " .. (resp and resp.message or "Failed to adjust"), "error")
+                        end
+                        os.sleep(2)
                     else
-                        showStatus("✗ " .. (resp and resp.message or "Failed"), "error")
+                        showStatus("Cancelled", "warning")
+                        os.sleep(1)
                     end
-                    os.sleep(2)
                 else
-                    showStatus("✗ Invalid score (300-850)", "error")
+                    showStatus("✗ Invalid score (must be 300-850)", "error")
                     os.sleep(2)
                 end
             end
@@ -1242,11 +1252,17 @@ local function mainMenu()
         gpu.set(25, menuY, "1  Check Balance")
         gpu.set(25, menuY + 2, "2  Transfer Funds")
         gpu.set(25, menuY + 4, "3  Loan Center")
-        gpu.setForeground(colors.warning)
-        gpu.set(25, menuY + 6, "4  Admin Panel")
-        gpu.setForeground(colors.text)
-        gpu.set(25, menuY + 8, "0  Logout")
-        drawFooter("Account: " .. username .. " • Connected")
+        
+        if isAdmin then
+            gpu.setForeground(colors.warning)
+            gpu.set(25, menuY + 6, "4  Admin Panel  ⭐")
+            gpu.setForeground(colors.text)
+            gpu.set(25, menuY + 8, "0  Logout")
+        else
+            gpu.set(25, menuY + 6, "0  Logout")
+        end
+        
+        drawFooter("Account: " .. username .. " • Connected" .. (isAdmin and " • ADMIN" or ""))
         local _, _, char = event.pull("key_down")
         if char == string.byte('1') then
             showStatus("⟳ Refreshing balance...", "info")
@@ -1305,8 +1321,8 @@ local function mainMenu()
             end
         elseif char == string.byte('3') then
             loanMenu()
-        elseif char == string.byte('4') then
-            -- Try to access admin panel - server will verify
+        elseif char == string.byte('4') and isAdmin then
+            -- Admin Panel - isAdmin is just for UI, server still verifies everything
             adminPanel()
         elseif char == string.byte('0') then
             -- Logout
@@ -1322,6 +1338,7 @@ local function mainMenu()
             username = nil
             password = nil
             balance = 0
+            isAdmin = false
             showStatus("✓ Logged out successfully", "success")
             os.sleep(1)
         end
