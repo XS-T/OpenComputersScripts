@@ -1,5 +1,6 @@
 -- Digital Currency Server with Admin Panel + Loans & Credit for OpenComputers 1.7.10
 -- Complete working version with all features + THREADED CONCURRENT PROCESSING
+-- VERSION 0.0.1
 
 local component = require("component")
 local event = require("event")
