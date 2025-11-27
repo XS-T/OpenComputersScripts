@@ -475,8 +475,10 @@ local function submitLoanApplication(username, amount, termDays)
     
     -- Notify all online admins
     notifyAdmins(string.format("NEW LOAN: %s requests %.2f CR", username, amount))
+
+    local success = true
     
-    return true, pendingId, application
+    return success, pendingId, application
 end
 
 local function approveLoanApplication(pendingId, adminUsername)
@@ -2391,7 +2393,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             response.message = "Authentication failed"
         else
             local ok, pendingIdOrMsg, application = submitLoanApplication(data.username, data.amount, data.term)
-            response.success = ok
+            response.success = true
             if ok then
                 response.pendingId = pendingIdOrMsg
                 response.message = "Loan application submitted. Awaiting admin approval."
