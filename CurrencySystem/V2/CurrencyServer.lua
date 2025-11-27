@@ -48,7 +48,7 @@ local data = component.data
 
 -- Encryption key (must match server)
 local SERVER_NAME = "Empire Credit Union"
-local ENCRYPTION_KEY = data.md5(SERVER_NAME .. "RelaySecure2024")
+local RELAY_ENCRYPTION_KEY = data.md5(SERVER_NAME .. "RelaySecure2024")
 
 -- Relay encryption functions
 local function encryptRelayMessage(plaintext)
@@ -56,7 +56,7 @@ local function encryptRelayMessage(plaintext)
         return nil
     end
     local iv = data.random(16)
-    local encrypted = data.encrypt(plaintext, ENCRYPTION_KEY, iv)
+    local encrypted = data.encrypt(plaintext, RELAY_ENCRYPTION_KEY, iv)
     return data.encode64(iv .. encrypted)
 end
 
