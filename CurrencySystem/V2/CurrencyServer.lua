@@ -2268,49 +2268,52 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             response.rating, _ = getCreditRating(credit.score)
             response.history = credit.history or {}
         end
-    elseif data.command == "get_loan_eligibility" then
-        if not validateSession(data.username, relayAddress) then
-            response.success = false
-            response.message = "Session invalid"
-        elseif not verifyPassword(data.username, data.password) then
-            response.success = false
-            response.message = "Authentication failed"
+elseif data.command == "get_loan_eligibility" then
+    if not validateSession(data.username, relayAddress) then
+        response.success = false
+        response.message = "Session invalid"
+    elseif not verifyPassword(data.username, data.password) then
+        response.success = false
+        response.message = "Authentication failed"
+    else
+        local eligibility = getLoanEligibility(data.username)
+        response.success = true
+        response.eligible = eligibility.eligible
+        response.maxLoan = eligibility.maxLoan
+        response.interestRate = eligibility.interestRate
+        response.creditScore = eligibility.creditScore
+        response.creditRating = eligibility.creditRating  -- ⭐ FIX: Use from eligibility
+        response.activeLoans = eligibility.activeLoans
+        response.totalOwed = eligibility.totalOwed
+    end
+elseif data.command == "apply_loan" then
+    if not validateSession(data.username, relayAddress) then
+        response.success = false
+        response.message = "Session invalid"
+    elseif not verifyPassword(data.username, data.password) then
+        response.success = false
+        response.message = "Authentication failed"
+    else
+        local ok, pendingIdOrMsg, application = submitLoanApplication(data.username, data.amount, data.term)
+        response.success = ok  -- ⭐ FIX: Use actual result!
+        if ok then
+            response.pendingId = pendingIdOrMsg
+            response.message = "Loan application submitted. Awaiting admin approval."
+            response.application = {
+                pendingId = pendingIdOrMsg,
+                amount = application.amount,
+                interest = application.interest,
+                totalOwed = application.totalOwed,
+                termDays = application.termDays,
+                status = "pending",
+                creditScore = application.creditScore,
+                creditRating = application.creditRating
+            }
         else
-            local eligibility = getLoanEligibility(data.username)
-            response.success = true
-            response.eligible = eligibility.eligible
-            response.maxLoan = eligibility.maxLoan
-            response.interestRate = eligibility.interestRate
-            response.creditScore = eligibility.creditScore
-            response.creditRating, _ = getCreditRating(eligibility.creditScore)
-            response.activeLoans = eligibility.activeLoans
-            response.totalOwed = eligibility.totalOwed
+            response.message = pendingIdOrMsg
+            -- response.success is already false from ok
         end
-    elseif data.command == "apply_loan" then
-        if not validateSession(data.username, relayAddress) then
-            response.success = false
-            response.message = "Session invalid"
-        elseif not verifyPassword(data.username, data.password) then
-            response.success = false
-            response.message = "Authentication failed"
-        else
-            local ok, pendingIdOrMsg, application = submitLoanApplication(data.username, data.amount, data.term)
-            response.success = true
-            if ok then
-                response.pendingId = pendingIdOrMsg
-                response.message = "Loan application submitted. Awaiting admin approval."
-                response.application = {
-                    pendingId = pendingIdOrMsg,
-                    amount = application.amount,
-                    interest = application.interest,
-                    totalOwed = application.totalOwed,
-                    termDays = application.termDays,
-                    status = "pending"
-                }
-            else
-                response.message = pendingIdOrMsg
-            end
-        end
+    end
     elseif data.command == "get_my_loans" then
         if not validateSession(data.username, relayAddress) then
             response.success = false
@@ -2670,6 +2673,11 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         end
     end
     local serializedResponse = serialization.serialize(response)
+    if not serializedResponse then
+        -- Serialization failed - create fallback
+        response = {type = "response", success = false, message = "Server error: response serialization failed"}
+        serializedResponse = serialization.serialize(response)
+    end
     -- Encrypt response if incoming was encrypted
     local responseToSend = isEncrypted and encryptRelayMessage(serializedResponse) or serializedResponse
     modem.send(sender, PORT, responseToSend)
