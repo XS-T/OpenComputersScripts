@@ -1,5 +1,5 @@
 -- Digital Currency Relay (Multi-Client) for OpenComputers 1.7.10
--- SUPPORTS MULTIPLE LINKED CARDS with ENCRYPTION
+-- SUPPORTS MULTIPLE LINKED CARDS with ENCRYPTION + THREADED
 -- Receives from clients via TUNNEL (linked cards)
 -- Forwards to server via WIRELESS (ENCRYPTED)
 
@@ -8,6 +8,7 @@ local event = require("event")
 local serialization = require("serialization")
 local computer = require("computer")
 local term = require("term")
+local thread = require("thread")
 
 -- Check for required components
 if not component.isAvailable("modem") then
@@ -74,7 +75,9 @@ local registeredClients = {} -- clientId -> {tunnel = tunnelObj, lastSeen = time
 local stats = {
     messagesForwarded = 0,
     messagesToClient = 0,
-    uptime = 0
+    uptime = 0,
+    activeThreads = 0,
+    totalMessages = 0
 }
 
 -- Screen setup
@@ -90,7 +93,7 @@ local function updateDisplay()
     print("Currency Relay - " .. RELAY_NAME)
     print("═══════════════════════════════════════════════════════")
     print("")
-    print("Mode: MULTI-TUNNEL ←→ WIRELESS (ENCRYPTED)")
+    print("Mode: MULTI-TUNNEL ←→ WIRELESS (ENCRYPTED + THREADED)")
     print("  Clients connect via: LINKED CARDS (" .. #tunnels .. " cards)")
     print("  Server connect via:  WIRELESS + AES ENCRYPTION")
     print("")
@@ -114,6 +117,8 @@ local function updateDisplay()
     print("Wireless Port: " .. PORT)
     print("Messages Forwarded: " .. stats.messagesForwarded)
     print("Messages to Clients: " .. stats.messagesToClient)
+    print("Active Threads: " .. stats.activeThreads)
+    print("Total Messages: " .. stats.totalMessages)
     print("Registered Clients: " .. (function() local c=0; for _ in pairs(registeredClients) do c=c+1 end return c end)())
     print("")
     print("═══════════════════════════════════════════════════════")
@@ -251,28 +256,35 @@ end
 
 -- Unified message handler - handles both tunnel and wireless
 local function handleMessage(eventType, _, sender, port, distance, message)
-    -- DEBUG: Log all incoming messages
-    addToLog("MSG: sender=" .. sender:sub(1,8) .. " port=" .. tostring(port) .. " dist=" .. tostring(distance), "DEBUG")
+    -- Increment total message counter
+    stats.totalMessages = stats.totalMessages + 1
     
-    -- Check if sender matches any of our tunnels
-    local matchedTunnel = false
-    for i, tunnel in ipairs(tunnels) do
-        if tunnel.address == sender then
-            addToLog("  Matched tunnel #" .. i, "DEBUG")
-            matchedTunnel = true
-            break
-        end
-    end
-    
-    if not matchedTunnel and (port == 0 or distance == nil) then
-        addToLog("  Looks like tunnel but NO MATCH!", "DEBUG")
-        addToLog("  Known tunnels:", "DEBUG")
+    -- Spawn thread to handle this message concurrently
+    thread.create(function()
+        stats.activeThreads = stats.activeThreads + 1
+        
+        -- DEBUG: Log all incoming messages
+        addToLog("MSG: sender=" .. sender:sub(1,8) .. " port=" .. tostring(port) .. " dist=" .. tostring(distance), "DEBUG")
+        
+        -- Check if sender matches any of our tunnels
+        local matchedTunnel = false
         for i, tunnel in ipairs(tunnels) do
-            addToLog("    [" .. i .. "] " .. tunnel.address:sub(1,16), "DEBUG")
+            if tunnel.address == sender then
+                addToLog("  Matched tunnel #" .. i, "DEBUG")
+                matchedTunnel = true
+                break
+            end
         end
-    end
-    
-    -- Check if this is a tunnel message and which tunnel
+        
+        if not matchedTunnel and (port == 0 or distance == nil) then
+            addToLog("  Looks like tunnel but NO MATCH!", "DEBUG")
+            addToLog("  Known tunnels:", "DEBUG")
+            for i, tunnel in ipairs(tunnels) do
+                addToLog("    [" .. i .. "] " .. tunnel.address:sub(1,16), "DEBUG")
+            end
+        end
+        
+        -- Check if this is a tunnel message and which tunnel
     local isTunnel, sourceTunnel = isTunnelMessage(sender, port, distance)
     
     if isTunnel then
@@ -475,6 +487,8 @@ local function handleMessage(eventType, _, sender, port, distance, message)
     end
     
     updateDisplay()
+    stats.activeThreads = stats.activeThreads - 1
+    end):detach()  -- Detach thread so it doesn't block relay
 end
 
 -- Main
