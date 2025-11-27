@@ -1,21 +1,27 @@
--- Digital Currency Client with Loans - COMPLETE
--- OpenComputers 1.7.10
+-- Digital Currency Client with Loans for OpenComputers 1.7.10
+-- Connects via TUNNEL (linked card)
 
 local component = require("component")
 local event = require("event")
 local serialization = require("serialization")
 local term = require("term")
-local unicode = require("unicode")
 local computer = require("computer")
+local gpu = component.gpu
+local unicode = require("unicode")
+
+if not component.isAvailable("tunnel") then
+    print("ERROR: LINKED CARD REQUIRED!")
+    print("This client requires a linked card to connect to a relay.")
+    return
+end
 
 local tunnel = component.tunnel
-local gpu = component.gpu
-
-local SERVER_PORT = 1000
 local username = nil
 local password = nil
 local balance = 0
 local loggedIn = false
+local relayConnected = false
+local clientId = tunnel.address
 local creditScore = 650
 local creditRating = "FAIR"
 
@@ -24,17 +30,16 @@ gpu.setResolution(80, 25)
 w, h = 80, 25
 
 local colors = {
-    bg = 0x0F0F0F, header = 0x1E3A8A, accent = 0x3B82F6,
-    success = 0x10B981, error = 0xEF4444, warning = 0xF59E0B,
-    text = 0xFFFFFF, textDim = 0x9CA3AF, border = 0x374151,
-    inputBg = 0x1F2937, excellent = 0x10B981, good = 0x3B82F6,
-    fair = 0xF59E0B, poor = 0xEF4444
+    bg = 0x0F0F0F, header = 0x1E3A8A, accent = 0x3B82F6, success = 0x10B981,
+    error = 0xEF4444, warning = 0xF59E0B, text = 0xFFFFFF, textDim = 0x9CA3AF,
+    border = 0x374151, inputBg = 0x1F2937, balance = 0x10B981,
+    excellent = 0x10B981, good = 0x3B82F6, fair = 0xF59E0B, poor = 0xEF4444
 }
 
 local function clearScreen()
     gpu.setBackground(colors.bg)
     gpu.setForeground(colors.text)
-    term.clear()
+    gpu.fill(1, 1, w, h, " ")
 end
 
 local function drawHeader(title, subtitle)
@@ -64,8 +69,7 @@ local function showStatus(msg, msgType)
     local color = colors.text
     if msgType == "success" then color = colors.success
     elseif msgType == "error" then color = colors.error
-    elseif msgType == "warning" then color = colors.warning
-    end
+    elseif msgType == "warning" then color = colors.warning end
     gpu.setBackground(colors.bg)
     gpu.fill(1, h - 1, w, 1, " ")
     gpu.setForeground(color)
@@ -91,18 +95,12 @@ local function input(prompt, y, hidden, maxLen)
             text = unicode.sub(text, 1, -2)
             gpu.setBackground(colors.inputBg)
             gpu.fill(x, y, maxLen, 1, " ")
-            if hidden then
-                gpu.set(x, y, string.rep("•", unicode.len(text)))
-            else
-                gpu.set(x, y, text)
-            end
+            if hidden then gpu.set(x, y, string.rep("•", unicode.len(text)))
+            else gpu.set(x, y, text) end
         elseif char >= 32 and char < 127 and unicode.len(text) < maxLen then
             text = text .. string.char(char)
-            if hidden then
-                gpu.set(x, y, string.rep("•", unicode.len(text)))
-            else
-                gpu.set(x, y, text)
-            end
+            if hidden then gpu.set(x, y, string.rep("•", unicode.len(text)))
+            else gpu.set(x, y, text) end
         end
     end
     gpu.setBackground(colors.bg)
@@ -120,38 +118,162 @@ local function centerText(y, text, fg)
     gpu.set(x, y, text)
 end
 
-local function sendCommand(command, data)
-    data.command = command
-    tunnel.send(serialization.serialize(data))
-    local timeoutTimer = event.timer(5, function() end)
-    while true do
-        local eventData = {event.pull(5, "modem_message")}
-        if eventData[1] == "modem_message" then
-            local message = eventData[6]
-            local success, response = pcall(serialization.unserialize, message)
-            if success and response and response.type == "response" then
-                event.cancel(timeoutTimer)
-                return response
+local function sendAndWait(data, timeout)
+    timeout = timeout or 5
+    if not relayConnected then
+        return {type = "response", success = false, message = "Not connected to relay"}
+    end
+    data.tunnelAddress = tunnel.address
+    data.tunnelChannel = tunnel.getChannel()
+    local message = serialization.serialize(data)
+    tunnel.send(message)
+    local deadline = computer.uptime() + timeout
+    while computer.uptime() < deadline do
+        local eventData = {event.pull(0.5, "modem_message")}
+        if eventData[1] then
+            local _, _, _, port, distance, msg = table.unpack(eventData)
+            local isTunnel = (port == 0 or distance == nil or distance == math.huge)
+            if isTunnel then
+                local success, response = pcall(serialization.unserialize, msg)
+                if success and response and response.type == "response" then
+                    return response
+                end
             end
-        elseif eventData[1] == nil then
-            event.cancel(timeoutTimer)
-            return nil
         end
     end
+    return nil
+end
+
+local function registerWithRelay()
+    clearScreen()
+    drawHeader("◆ CONNECTING TO RELAY ◆", "Establishing secure tunnel connection")
+    drawBox(20, 8, 40, 12, colors.bg)
+    gpu.setForeground(colors.accent)
+    gpu.set(22, 10, "Tunnel Component Check:")
+    gpu.setForeground(colors.text)
+    gpu.set(22, 11, "Address: " .. tunnel.address:sub(1, 20))
+    gpu.set(22, 12, "Channel: " .. tunnel.getChannel():sub(1, 20))
+    gpu.setForeground(colors.textDim)
+    gpu.set(22, 13, "Client ID: " .. clientId:sub(1, 20))
+    gpu.setForeground(colors.text)
+    gpu.set(22, 15, "⟳ Sending registration...")
+    drawFooter("Tunnel: " .. tunnel.address:sub(1, 16))
+    local registration = serialization.serialize({
+        type = "client_register",
+        tunnelAddress = tunnel.address,
+        tunnelChannel = tunnel.getChannel()
+    })
+    gpu.set(22, 16, "Message size: " .. #registration .. " bytes")
+    local sendOk, sendErr = pcall(tunnel.send, registration)
+    if not sendOk then
+        gpu.setForeground(colors.error)
+        gpu.set(22, 17, "✗ Send error: " .. tostring(sendErr))
+        showStatus("Press any key to retry...", "error")
+        event.pull("key_down")
+        return false
+    end
+    gpu.setForeground(colors.success)
+    gpu.set(22, 17, "✓ Sent via tunnel")
+    gpu.setForeground(colors.text)
+    gpu.set(22, 18, "Waiting for relay ACK...")
+    local deadline = computer.uptime() + 5
+    local eventCount = 0
+    while computer.uptime() < deadline do
+        local eventData = {event.pull(0.5, "modem_message")}
+        if eventData[1] then
+            eventCount = eventCount + 1
+            local eventType, _, sender, port, distance, msg = table.unpack(eventData)
+            gpu.fill(22, 19, 35, 1, " ")
+            gpu.setForeground(colors.textDim)
+            gpu.set(22, 19, "Event #" .. eventCount .. ": port=" .. tostring(port))
+            local isTunnel = (port == 0 or distance == nil or distance == math.huge)
+            if isTunnel then
+                gpu.setForeground(colors.success)
+                gpu.set(22, 20, "✓ Tunnel message detected")
+                local success, response = pcall(serialization.unserialize, msg)
+                if success and response then
+                    gpu.set(22, 21, "Type: " .. tostring(response.type))
+                    if response.type == "relay_ack" then
+                        relayConnected = true
+                        clearScreen()
+                        drawHeader("◆ CONNECTION ESTABLISHED ◆")
+                        drawBox(20, 10, 40, 6, colors.bg)
+                        gpu.setForeground(colors.success)
+                        gpu.set(22, 11, "✓ Connected to relay")
+                        gpu.setForeground(colors.text)
+                        gpu.set(22, 12, "  " .. response.relay_name)
+                        if response.server_connected then
+                            gpu.setForeground(colors.success)
+                            gpu.set(22, 14, "✓ Server online")
+                        else
+                            gpu.setForeground(colors.warning)
+                            gpu.set(22, 14, "⚠ Server searching...")
+                        end
+                        showStatus("Press any key to continue...", "success")
+                        event.pull("key_down")
+                        return true
+                    else
+                        gpu.setForeground(colors.warning)
+                        gpu.set(22, 21, "Wrong type: " .. tostring(response.type))
+                    end
+                else
+                    gpu.setForeground(colors.error)
+                    gpu.set(22, 21, "Parse error")
+                end
+            else
+                gpu.setForeground(colors.textDim)
+                gpu.set(22, 20, "Wireless (ignored)")
+            end
+        end
+    end
+    gpu.setForeground(colors.error)
+    gpu.fill(22, 15, 35, 10, " ")
+    gpu.set(22, 15, "✗ Connection failed")
+    gpu.setForeground(colors.text)
+    gpu.set(22, 17, "Events received: " .. eventCount)
+    gpu.set(22, 19, "Check:")
+    gpu.setForeground(colors.textDim)
+    gpu.set(22, 20, "• Relay is running")
+    gpu.set(22, 21, "• Paired linked card")
+    gpu.set(22, 22, "• Same channel ID")
+    showStatus("Press any key to retry...", "error")
+    event.pull("key_down")
+    return false
+end
+
+local function welcomeScreen()
+    clearScreen()
+    drawHeader("◆ DIGITAL CURRENCY SYSTEM ◆", "Secure P2P Banking + Loans")
+    drawBox(15, 7, 50, 5, colors.bg)
+    gpu.setForeground(colors.accent)
+    gpu.set(17, 8, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    gpu.setForeground(colors.textDim)
+    gpu.set(17, 9, "  Secured by linked card technology")
+    gpu.set(17, 10, "  Credit scoring & loan management")
+    gpu.setForeground(colors.accent)
+    gpu.set(17, 11, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    gpu.setForeground(colors.text)
+    gpu.set(32, 15, "1  Login to Account")
+    gpu.set(32, 17, "2  Exit")
+    gpu.setForeground(colors.textDim)
+    gpu.set(17, 20, "Note: Account registration is managed by")
+    gpu.set(17, 21, "      administrators at the server level.")
+    drawFooter("Linked Card: " .. tunnel.getChannel():sub(1, 16) .. " • Secure Connection")
+    local _, _, char = event.pull("key_down")
+    if char == string.byte('1') then return "login"
+    elseif char == string.byte('2') then return "exit" end
+    return nil
 end
 
 local function loginScreen()
     clearScreen()
-    drawHeader("◆ DIGITAL BANKING ◆", "Secure Login")
-    drawBox(15, 7, 50, 10, colors.bg)
-    gpu.setForeground(colors.accent)
-    centerText(8, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    local user = input("Username: ", 10, false, 25)
-    if not user or user == "" then return false end
-    local pass = input("Password: ", 12, true, 25)
-    if not pass or pass == "" then return false end
-    showStatus("⟳ Connecting to server...", "info")
-    local response = sendCommand("login", {username = user, password = pass})
+    drawHeader("◆ LOGIN ◆", "Access your account")
+    drawBox(20, 8, 40, 10, colors.bg)
+    gpu.setForeground(colors.text)
+    local user = input("Username: ", 10, false, 20)
+    local pass = input("Password: ", 12, true, 20)
+    showStatus("⟳ Authenticating...", "info")
+    local response = sendAndWait({command = "login", username = user, password = pass})
     if response and response.success then
         username = user
         password = pass
@@ -193,68 +315,6 @@ local function loginScreen()
     return false
 end
 
-local function updateBalance()
-    local response = sendCommand("balance", {username = username, password = password})
-    if response and response.success then
-        balance = response.balance
-        return true
-    else
-        showStatus("✗ Failed to update balance", "error")
-        return false
-    end
-end
-
-local function viewBalance()
-    clearScreen()
-    drawHeader("◆ ACCOUNT BALANCE ◆", username)
-    if updateBalance() then
-        drawBox(20, 8, 40, 6, colors.bg)
-        gpu.setForeground(colors.textDim)
-        centerText(9, "Current Balance")
-        gpu.setForeground(colors.success)
-        local balStr = string.format("%.2f CR", balance)
-        gpu.setResolution(80, 25)
-        centerText(11, balStr)
-        gpu.setForeground(colors.textDim)
-        centerText(13, "Credit Score: " .. creditScore .. " (" .. creditRating .. ")")
-    end
-    centerText(16, "Press Enter to continue")
-    drawFooter("Balance Inquiry")
-    io.read()
-end
-
-local function transferFunds()
-    clearScreen()
-    drawHeader("◆ TRANSFER FUNDS ◆", username)
-    drawBox(15, 7, 50, 12, colors.bg)
-    gpu.setForeground(colors.text)
-    gpu.set(17, 8, "Current Balance: " .. string.format("%.2f CR", balance))
-    local recipient = input("Recipient:  ", 10, false, 25)
-    if not recipient or recipient == "" then return end
-    local amountStr = input("Amount:     ", 12, false, 15)
-    local amount = tonumber(amountStr)
-    if not amount or amount <= 0 then
-        showStatus("✗ Invalid amount", "error")
-        os.sleep(2)
-        return
-    end
-    if amount > balance then
-        showStatus("✗ Insufficient funds", "error")
-        os.sleep(2)
-        return
-    end
-    showStatus("⟳ Processing transfer...", "info")
-    local response = sendCommand("transfer", {username = username, password = password, recipient = recipient, amount = amount})
-    if response and response.success then
-        balance = response.balance
-        showStatus("✓ Transfer successful!", "success")
-        os.sleep(2)
-    else
-        showStatus("✗ " .. (response and response.message or "Transfer failed"), "error")
-        os.sleep(2)
-    end
-end
-
 local function getCreditScoreColor(score)
     if score >= 750 then return colors.excellent
     elseif score >= 700 then return colors.good
@@ -266,7 +326,7 @@ local function viewCreditScore()
     clearScreen()
     drawHeader("◆ CREDIT SCORE ◆", username)
     showStatus("⟳ Loading credit information...", "info")
-    local response = sendCommand("get_credit_score", {username = username, password = password})
+    local response = sendAndWait({command = "get_credit_score", username = username, password = password})
     if response and response.success then
         clearScreen()
         drawHeader("◆ CREDIT SCORE ◆", username)
@@ -308,7 +368,7 @@ local function checkLoanEligibility()
     clearScreen()
     drawHeader("◆ LOAN ELIGIBILITY ◆", username)
     showStatus("⟳ Checking eligibility...", "info")
-    local response = sendCommand("get_loan_eligibility", {username = username, password = password})
+    local response = sendAndWait({command = "get_loan_eligibility", username = username, password = password})
     if response and response.success then
         clearScreen()
         drawHeader("◆ LOAN ELIGIBILITY ◆", username)
@@ -338,7 +398,7 @@ local function applyForLoan()
     clearScreen()
     drawHeader("◆ APPLY FOR LOAN ◆", username)
     showStatus("⟳ Checking eligibility...", "info")
-    local eligResponse = sendCommand("get_loan_eligibility", {username = username, password = password})
+    local eligResponse = sendAndWait({command = "get_loan_eligibility", username = username, password = password})
     if not eligResponse or not eligResponse.success then
         showStatus("✗ Failed to check eligibility", "error")
         os.sleep(2)
@@ -396,7 +456,7 @@ local function applyForLoan()
         return
     end
     showStatus("⟳ Processing loan application...", "info")
-    local response = sendCommand("apply_loan", {username = username, password = password, amount = amount, term = term})
+    local response = sendAndWait({command = "apply_loan", username = username, password = password, amount = amount, term = term})
     if response and response.success then
         balance = response.balance
         showStatus("✓ Loan approved! ID: " .. response.loanId, "success")
@@ -411,7 +471,7 @@ local function viewMyLoans()
     clearScreen()
     drawHeader("◆ MY LOANS ◆", username)
     showStatus("⟳ Loading loans...", "info")
-    local response = sendCommand("get_my_loans", {username = username, password = password})
+    local response = sendAndWait({command = "get_my_loans", username = username, password = password})
     if response and response.success then
         clearScreen()
         drawHeader("◆ MY LOANS ◆", username)
@@ -453,7 +513,7 @@ local function makePayment()
     clearScreen()
     drawHeader("◆ MAKE PAYMENT ◆", username)
     showStatus("⟳ Loading loans...", "info")
-    local loansResponse = sendCommand("get_my_loans", {username = username, password = password})
+    local loansResponse = sendAndWait({command = "get_my_loans", username = username, password = password})
     if not loansResponse or not loansResponse.success or #loansResponse.loans == 0 then
         clearScreen()
         drawHeader("◆ MAKE PAYMENT ◆", username)
@@ -485,7 +545,7 @@ local function makePayment()
         return
     end
     showStatus("⟳ Processing payment...", "info")
-    local response = sendCommand("make_loan_payment", {username = username, password = password, loanId = loanId, amount = amount})
+    local response = sendAndWait({command = "make_loan_payment", username = username, password = password, loanId = loanId, amount = amount})
     if response and response.success then
         balance = response.balance
         showStatus(string.format("✓ Paid %.2f CR, Remaining: %.2f CR", response.paid, response.remaining), "success")
@@ -524,39 +584,141 @@ end
 local function mainMenu()
     while loggedIn do
         clearScreen()
-        drawHeader("◆ MAIN MENU ◆", username)
-        drawBox(20, 7, 40, 13, colors.bg)
+        drawHeader("◆ ACCOUNT DASHBOARD ◆", username)
+        drawBox(15, 6, 50, 5, colors.bg)
+        gpu.setForeground(colors.textDim)
+        gpu.set(17, 7, "BALANCE")
+        gpu.setForeground(colors.balance)
+        local balStr = string.format("%.2f CR", balance)
+        local balX = math.floor(40 - unicode.len(balStr) / 2)
+        gpu.set(balX, 9, balStr)
+        local menuY = 13
         gpu.setForeground(colors.text)
-        centerText(8, "Balance: " .. string.format("%.2f CR", balance))
-        gpu.setForeground(colors.accent)
-        centerText(10, "1  View Balance")
-        centerText(11, "2  Transfer Funds")
-        centerText(12, "3  Loan Center")
-        centerText(14, "0  Logout")
-        drawFooter("Main Menu - Select option")
+        gpu.set(25, menuY, "1  Check Balance")
+        gpu.set(25, menuY + 2, "2  Transfer Funds")
+        gpu.set(25, menuY + 4, "3  Loan Center")
+        gpu.set(25, menuY + 6, "4  Logout")
+        drawFooter("Account: " .. username .. " • Connected")
         local _, _, char = event.pull("key_down")
-        if char == string.byte('1') then viewBalance()
-        elseif char == string.byte('2') then transferFunds()
-        elseif char == string.byte('3') then loanMenu()
-        elseif char == string.byte('0') then
-            local response = sendCommand("logout", {username = username, password = password})
+        if char == string.byte('1') then
+            showStatus("⟳ Refreshing balance...", "info")
+            local response = sendAndWait({command = "balance", username = username, password = password})
+            if response and response.success then
+                balance = response.balance
+                showStatus("✓ Balance: " .. string.format("%.2f", balance) .. " CR", "success")
+            else
+                showStatus("✗ " .. (response and response.message or "Failed"), "error")
+            end
+            os.sleep(2)
+        elseif char == string.byte('2') then
+            clearScreen()
+            drawHeader("◆ TRANSFER FUNDS ◆", "Send credits to another account")
+            drawBox(20, 8, 40, 11, colors.bg)
+            gpu.setForeground(colors.textDim)
+            gpu.set(22, 9, "Available: " .. string.format("%.2f CR", balance))
+            gpu.setForeground(colors.text)
+            local recipient = input("To:     ", 11, false, 20)
+            if recipient == "" or recipient == username then
+                showStatus("✗ Invalid recipient", "error")
+                os.sleep(2)
+            else
+                local amountStr = input("Amount: ", 13, false, 10)
+                local amount = tonumber(amountStr)
+                if not amount or amount <= 0 then
+                    showStatus("✗ Invalid amount", "error")
+                    os.sleep(2)
+                elseif amount > balance then
+                    showStatus("✗ Insufficient funds", "error")
+                    os.sleep(2)
+                else
+                    gpu.setForeground(colors.warning)
+                    gpu.set(22, 16, "Confirm transfer?")
+                    gpu.set(22, 17, string.format("%.2f CR → %s", amount, recipient))
+                    local _, _, confirmChar = event.pull("key_down")
+                    if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
+                        showStatus("⟳ Processing transfer...", "info")
+                        local response = sendAndWait({command = "transfer", username = username, password = password, recipient = recipient, amount = amount}, 10)
+                        if not response then
+                            showStatus("✗ No response from server (timeout)", "error")
+                            os.sleep(3)
+                        elseif response.success then
+                            balance = response.balance
+                            showStatus("✓ Transfer successful! New balance: " .. string.format("%.2f", balance) .. " CR", "success")
+                            os.sleep(3)
+                        else
+                            showStatus("✗ " .. (response.message or "Transfer failed"), "error")
+                            os.sleep(3)
+                        end
+                    else
+                        showStatus("Transfer cancelled", "warning")
+                        os.sleep(1)
+                    end
+                end
+            end
+        elseif char == string.byte('3') then
+            loanMenu()
+        elseif char == string.byte('4') then
+            showStatus("⟳ Logging out...", "info")
+            sendAndWait({command = "logout", username = username, password = password})
+            local disconnect = serialization.serialize({
+                type = "client_deregister",
+                tunnelAddress = tunnel.address,
+                tunnelChannel = tunnel.getChannel()
+            })
+            tunnel.send(disconnect)
             loggedIn = false
             username = nil
             password = nil
-            showStatus("✓ Logged out", "success")
+            balance = 0
+            showStatus("✓ Logged out successfully", "success")
             os.sleep(1)
-            break
         end
     end
 end
 
 local function main()
     clearScreen()
+    while not relayConnected do
+        if not registerWithRelay() then
+            clearScreen()
+            gpu.setForeground(colors.text)
+            gpu.set(2, 10, "Retry connection? (y/n)")
+            local _, _, char = event.pull("key_down")
+            if char ~= string.byte('y') and char ~= string.byte('Y') then return end
+        end
+    end
     while true do
-        if loginScreen() then
+        if not loggedIn then
+            local action = welcomeScreen()
+            if action == "login" then loginScreen()
+            elseif action == "exit" then break end
+        else
             mainMenu()
         end
     end
+    clearScreen()
+    gpu.setForeground(colors.success)
+    local msg = "Thank you for using Digital Currency!"
+    local msgX = math.floor((w - unicode.len(msg)) / 2)
+    gpu.set(msgX, 12, msg)
 end
 
-main()
+local success, err = pcall(main)
+if not success then
+    clearScreen()
+    gpu.setForeground(colors.error)
+    print("Error: " .. tostring(err))
+end
+
+if loggedIn and username then
+    pcall(sendAndWait, {command = "logout", username = username, password = password}, 2)
+end
+
+if relayConnected then
+    local dereg = serialization.serialize({
+        type = "client_deregister",
+        tunnelAddress = tunnel.address,
+        tunnelChannel = tunnel.getChannel()
+    })
+    pcall(tunnel.send, dereg)
+end
