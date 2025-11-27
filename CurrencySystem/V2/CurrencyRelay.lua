@@ -1,7 +1,5 @@
 -- Digital Currency Relay (Multi-Client) for OpenComputers 1.7.10
--- SUPPORTS MULTIPLE LINKED CARDS with ENCRYPTION + THREADED + DEBUG (PLAINTEXT LOGGING)
--- Receives from clients via TUNNEL (linked cards)
--- Forwards to server via WIRELESS (ENCRYPTED)
+-- Encryption + Multi-Tunnel + Threaded + File Debug Logging + Debug Toggle (press 'D')
 
 local component = require("component")
 local event = require("event")
@@ -9,13 +7,13 @@ local serialization = require("serialization")
 local computer = require("computer")
 local term = require("term")
 local thread = require("thread")
+local filesystem = require("filesystem")
 
--- Check for required components
+-- Requirement checks
 if not component.isAvailable("modem") then
     print("ERROR: Wireless Network Card required!")
     return
 end
-
 if not component.isAvailable("data") then
     print("ERROR: Data Card (Tier 2+) required for encryption!")
     return
@@ -24,63 +22,67 @@ end
 local modem = component.modem
 local data = component.data
 
--- Encryption key (must match server)
+-- ==========================
+-- CONFIG
+-- ==========================
 local SERVER_NAME = "Empire Credit Union"
+local PORT = 1000
+local RELAY_NAME = "Multi-Client Relay (Encrypted)"
+
+-- File logging config
+local DEBUG = true                    -- default debug on
+local LOG_FILE = "/home/relay_debug.log"
+local ROTATED_LOG_FILE = "/home/relay_debug.log.1"
+local MAX_LOG_BYTES = 100 * 1024      -- rotate when > ~100KB
+
+-- Encryption key (must match server)
 local ENCRYPTION_KEY = data.md5(SERVER_NAME .. "RelaySecure2024")
 
--- Encryption functions
+-- ==========================
+-- ENCRYPT/DECRYPT HELPERS
+-- ==========================
 local function encryptMessage(plaintext)
-    if not plaintext or plaintext == "" then
-        return nil
-    end
+    if not plaintext or plaintext == "" then return nil end
     local iv = data.random(16)
     local encrypted = data.encrypt(plaintext, ENCRYPTION_KEY, iv)
     return data.encode64(iv .. encrypted)
 end
 
 local function decryptMessage(ciphertext)
-    if not ciphertext or ciphertext == "" then
-        return nil
-    end
-    
-    local success, result = pcall(function()
+    if not ciphertext or ciphertext == "" then return nil end
+    local ok, result = pcall(function()
         local combined = data.decode64(ciphertext)
         local iv = combined:sub(1, 16)
         local encrypted = combined:sub(17)
         return data.decrypt(encrypted, ENCRYPTION_KEY, iv)
     end)
-    
-    if success then
-        return result
-    else
-        return nil
-    end
+    if ok then return result else return nil end
 end
 
--- Get ALL tunnel components (linked cards)
+-- ==========================
+-- TUNNELS (linked cards)
+-- ==========================
 local tunnels = {}
-for address in component.list("tunnel") do
-    table.insert(tunnels, component.proxy(address))
-    print("Found linked card: " .. address:sub(1, 16))
+for addr in component.list("tunnel") do
+    local ok, proxy = pcall(component.proxy, addr)
+    if ok and proxy then
+        table.insert(tunnels, proxy)
+        print("Found linked card: " .. tostring(addr):sub(1,16))
+    end
 end
 
 if #tunnels == 0 then
     print("ERROR: No Tunnel (Linked Card) found!")
-    print("")
-    print("This relay needs at least one linked card to communicate with clients.")
-    print("Install linked cards for each client you want to support.")
+    print("Install at least one linked card for client connectivity.")
     return
 end
-
 print("Total linked cards: " .. #tunnels)
 
--- Configuration
-local PORT = 1000
-local RELAY_NAME = "Multi-Client Relay (Encrypted)"
-
--- State
+-- ==========================
+-- STATE
+-- ==========================
 local serverAddress = nil
-local registeredClients = {} -- clientId -> {tunnel = tunnelObj, lastSeen = time}
+local registeredClients = {}   -- clientId -> {tunnel = tunnelObj, clientTunnelAddress, relayTunnelAddress, lastSeen}
 local stats = {
     messagesForwarded = 0,
     messagesToClient = 0,
@@ -89,523 +91,370 @@ local stats = {
     totalMessages = 0
 }
 
--- Screen setup
-term.clear()
+-- ==========================
+-- LOGGING
+-- ==========================
+local function rotateLogIfNeeded()
+    -- rotate when file exists and is too large
+    if filesystem.exists(LOG_FILE) then
+        local ok, size = pcall(filesystem.size, LOG_FILE)
+        if ok and size and size > MAX_LOG_BYTES then
+            if filesystem.exists(ROTATED_LOG_FILE) then
+                filesystem.remove(ROTATED_LOG_FILE)
+            end
+            -- rename (move) current to rotated
+            filesystem.rename(LOG_FILE, ROTATED_LOG_FILE)
+        end
+    end
+end
 
--- Logging
-local log = {}
+local function writeLogLine(line)
+    -- Always write to file regardless of DEBUG? We'll write only when log exists, but include regardless so you keep full history.
+    -- Use append mode, create directories if needed
+    local ok, err = pcall(function()
+        rotateLogIfNeeded()
+        local f = io.open(LOG_FILE, "a")
+        if not f then error("open failed") end
+        f:write(os.date("[%Y-%m-%d %H:%M:%S] ") .. line .. "\n")
+        f:close()
+    end)
+    if not ok then
+        -- if writing fails, print to stderr once
+        io.stderr:write("Log write failed: " .. tostring(err) .. "\n")
+    end
+end
 
--- Display (defined first so addToLog can use it)
+local function addToLog(message, category)
+    category = category or "INFO"
+    local entry = "[" .. category .. "] " .. tostring(message)
+    -- screen output only if DEBUG enabled (but we always write to file per your request)
+    if DEBUG then
+        -- keep terminal readable (don't clear here)
+        print(os.date("%H:%M:%S") .. " " .. entry)
+    end
+    writeLogLine(entry)
+end
+
+-- ==========================
+-- DISPLAY (simple periodic display update)
+-- ==========================
 local function updateDisplay()
+    if not DEBUG then return end
     term.clear()
     print("═══════════════════════════════════════════════════════")
     print("Currency Relay - " .. RELAY_NAME)
     print("═══════════════════════════════════════════════════════")
-    print("")
     print("Mode: MULTI-TUNNEL ←→ WIRELESS (ENCRYPTED + THREADED + DEBUG)")
-    print("  Clients connect via: LINKED CARDS (" .. #tunnels .. " cards)")
-    print("  Server connect via:  WIRELESS + AES ENCRYPTION")
+    print("Clients via: LINKED CARDS (" .. #tunnels .. " cards)")
+    print("Server via:  WIRELESS + AES ENCRYPTION")
     print("")
-    
     if serverAddress then
-        print("Server: ✓ CONNECTED (Encrypted)")
-        print("  Address: " .. serverAddress:sub(1, 16))
+        print("Server: ✓ CONNECTED (Address: " .. serverAddress:sub(1,16) .. ")")
     else
         print("Server: ✗ SEARCHING...")
     end
-    
-    print("")
-    
-    -- Show all tunnel channels
-    print("Linked Cards:")
-    for i, tunnel in ipairs(tunnels) do
-        -- protect getChannel in case of error
-        local ok, ch = pcall(tunnel.getChannel, tunnel)
-        if ok and ch then
-            print("  [" .. i .. "] " .. tostring(ch):sub(1, 24))
-        else
-            print("  [" .. i .. "] (channel unknown)")
-        end
-    end
-    
     print("")
     print("Wireless Port: " .. PORT)
     print("Messages Forwarded: " .. stats.messagesForwarded)
     print("Messages to Clients: " .. stats.messagesToClient)
     print("Active Threads: " .. stats.activeThreads)
     print("Total Messages: " .. stats.totalMessages)
-    print("Registered Clients: " .. (function() local c=0; for _ in pairs(registeredClients) do c=c+1 end return c end)())
-    print("")
+    local rc = 0
+    for _ in pairs(registeredClients) do rc = rc + 1 end
+    print("Registered Clients: " .. rc)
     print("═══════════════════════════════════════════════════════")
-    print("ACTIVITY LOG:")
-    print("═══════════════════════════════════════════════════════")
-    
-    for i = 1, math.min(10, #log) do
-        local entry = log[i]
-        if entry.category == "SUCCESS" then
-            io.write("\27[32m") -- Green
-        elseif entry.category == "ERROR" then
-            io.write("\27[31m") -- Red
-        elseif entry.category == "CLIENT" then
-            io.write("\27[36m") -- Cyan
-        elseif entry.category == "SERVER" then
-            io.write("\27[33m") -- Yellow
-        elseif entry.category == "DEBUG" then
-            io.write("\27[35m") -- Magenta
-        end
-        
-        print("[" .. entry.time .. "] " .. entry.message)
-        io.write("\27[0m") -- Reset
-    end
+    print("Press 'D' to toggle debug logging to screen (file logging always on).")
 end
 
-local function addToLog(message, category)
-    category = category or "INFO"
-    local entry = {
-        time = os.date("%H:%M:%S"),
-        category = category,
-        message = message
-    }
-    table.insert(log, 1, entry)
-    if #log > 200 then
-        -- keep log reasonable size
-        for i = 201, #log do log[i] = nil end
-    end
-    updateDisplay()
-end
-
--- Server discovery
+-- ==========================
+-- SERVER DISCOVERY
+-- ==========================
 local function findServer()
     if serverAddress then return true end
-    
-    addToLog("Searching for server...", "SEARCH")
-    
-    local ping = serialization.serialize({
-        type = "relay_ping",
-        relay_name = RELAY_NAME
-    })
-    
-    -- Encrypt the ping
+    addToLog("Searching for server (discovery ping)...", "SEARCH")
+    local ping = serialization.serialize({ type = "relay_ping", relay_name = RELAY_NAME })
     local encryptedPing = encryptMessage(ping)
-    
     modem.broadcast(PORT, encryptedPing)
-    
-    -- Wait for response
     local deadline = computer.uptime() + 3
     while computer.uptime() < deadline do
-        local eventData = {event.pull(0.5, "modem_message")}
-        if eventData[1] then
-            local _, _, sender, port, _, message = table.unpack(eventData)
+        local ev = { event.pull(0.5, "modem_message") }
+        if ev[1] then
+            local _, _, sender, port, _, message = table.unpack(ev)
             if port == PORT then
-                -- Try to decrypt
-                local decrypted = decryptMessage(message)
-                if decrypted then
-                    local success, data = pcall(serialization.unserialize, decrypted)
-                    if success and data and data.type == "server_response" then
+                local dec = decryptMessage(message)
+                if dec then
+                    local ok, data = pcall(serialization.unserialize, dec)
+                    if ok and data and data.type == "server_response" then
                         serverAddress = sender
-                        addToLog("Server found: " .. sender:sub(1, 8), "SUCCESS")
+                        addToLog("Server found at " .. sender, "SUCCESS")
                         return true
                     end
                 else
-                    addToLog("Received server response but decryption failed during discovery", "DEBUG")
+                    addToLog("Server discovery: received encrypted message but decryption failed", "DEBUG")
                 end
             end
         end
     end
-    
-    addToLog("Server not found", "ERROR")
+    addToLog("Server discovery timed out", "ERROR")
     return false
 end
 
--- Server heartbeat
+-- ==========================
+-- HEARTBEAT
+-- ==========================
 local function serverHeartbeat()
     while true do
         os.sleep(30)
-        
         if serverAddress then
-            local clientCount = 0
-            for _ in pairs(registeredClients) do
-                clientCount = clientCount + 1
-            end
-            
-            local heartbeat = serialization.serialize({
-                type = "relay_heartbeat",
-                relay_name = RELAY_NAME,
-                clients = clientCount
-            })
-            
-            -- Encrypt heartbeat
-            local encryptedHeartbeat = encryptMessage(heartbeat)
-            
-            modem.send(serverAddress, PORT, encryptedHeartbeat)
-            addToLog("Heartbeat sent (" .. clientCount .. " clients)", "SERVER")
+            local clientCount = 0 for _ in pairs(registeredClients) do clientCount = clientCount + 1 end
+            local hb = serialization.serialize({ type = "relay_heartbeat", relay_name = RELAY_NAME, clients = clientCount })
+            local enc = encryptMessage(hb)
+            pcall(modem.send, serverAddress, PORT, enc)
+            addToLog("Heartbeat sent to server (" .. clientCount .. " clients)", "SERVER")
         else
             findServer()
         end
     end
 end
 
--- Find which tunnel a message came from
-local function getTunnelBySender(sender)
-    -- When message comes via tunnel, sender is the tunnel's own address
-    for _, tunnel in ipairs(tunnels) do
-        if tunnel.address == sender then
-            return tunnel
-        end
+-- ==========================
+-- UTIL: tunnel helpers
+-- ==========================
+local function findTunnelByChannel(channel)
+    for i, t in ipairs(tunnels) do
+        local ok, ch = pcall(t.getChannel, t)
+        if ok and ch == channel then return t end
     end
     return nil
 end
 
--- Get tunnel by checking if it's in our list
+-- ==========================
+-- MESSAGE HANDLER
+-- ==========================
 local function isTunnelMessage(sender, port, distance)
-    -- Tunnel messages have port == 0 OR distance == nil
+    -- Tunnel messages observed in this relay arrive with port == 0 or distance == nil
     if port ~= 0 and distance ~= nil and distance ~= math.huge then
-        return false, nil
+        return false
     end
-    
-    -- Port 0 or nil distance means it's definitely a tunnel message
-    return true, nil  -- Return true but tunnel unknown until we parse message
+    return true
 end
 
--- Unified message handler - handles both tunnel and wireless
-local function handleMessage(eventType, _, sender, port, distance, message)
-    -- Increment total message counter
+local function handleMessage(eventName, _, sender, port, distance, message)
     stats.totalMessages = stats.totalMessages + 1
-    
-    -- Spawn thread to handle this message concurrently
     thread.create(function()
         stats.activeThreads = stats.activeThreads + 1
-        
-        -- DEBUG: Log all incoming messages header
         addToLog("MSG: sender=" .. tostring(sender):sub(1,8) .. " port=" .. tostring(port) .. " dist=" .. tostring(distance), "DEBUG")
-        
-        -- Check if sender matches any of our tunnels
-        local matchedTunnel = false
-        for i, tunnel in ipairs(tunnels) do
-            if tunnel.address == sender then
-                addToLog("  Matched tunnel #" .. i, "DEBUG")
-                matchedTunnel = true
-                break
-            end
-        end
-        
-        if not matchedTunnel and (port == 0 or distance == nil) then
-            addToLog("  Looks like tunnel but NO MATCH!", "DEBUG")
-            addToLog("  Known tunnels:", "DEBUG")
-            for i, tunnel in ipairs(tunnels) do
-                addToLog("    [" .. i .. "] " .. tunnel.address:sub(1,16), "DEBUG")
-            end
-        end
-        
-        -- Check if this is a tunnel message and which tunnel
-        local isTunnel, sourceTunnel = isTunnelMessage(sender, port, distance)
-        
-        if isTunnel then
-            -- ==========================================
-            -- FROM CLIENT (via tunnel) - NOT ENCRYPTED
-            -- ==========================================
-            addToLog("← CLIENT via tunnel (port=" .. tostring(port) .. ")", "CLIENT")
-            
-            -- DEBUG: show raw client message
-            addToLog("CLIENT RAW → " .. tostring(message), "DEBUG")
-            
-            -- Parse message first to get client's tunnel address
+
+        local tunneled = isTunnelMessage(sender, port, distance)
+        if tunneled then
+            -- CLIENT → RELAY (plaintext via linked card)
+            addToLog("← CLIENT via tunnel (raw): " .. tostring(message), "CLIENT")
+            -- attempt unserialize
             local ok, data = pcall(serialization.unserialize, message)
-            
             if not ok or not data then
-                addToLog("ERROR: Failed to parse message from client: " .. tostring(message), "ERROR")
+                addToLog("Failed to parse client message: " .. tostring(message), "ERROR")
                 stats.activeThreads = stats.activeThreads - 1
                 return
             end
-            
-            -- DEBUG: show parsed client table (serialized for readability)
-            local ok2, pretty = pcall(serialization.serialize, data)
-            if ok2 and pretty then
-                addToLog("CLIENT PARSED → " .. tostring(pretty), "DEBUG")
-            end
-            
-            -- Find which tunnel to use based on client's tunnel address
+            addToLog("CLIENT PARSED: " .. (pcall(serialization.serialize, data) and serialization.serialize(data) or tostring(data)), "DEBUG")
+
+            -- determine source tunnel
             local sourceTunnel = nil
-            
-            if data.tunnelAddress then
-                -- Client sent their tunnel address - find our paired tunnel
-                local clientTunnelAddr = data.tunnelAddress
-                addToLog("  Client tunnel: " .. tostring(clientTunnelAddr):sub(1, 8), "DEBUG")
-                
-                -- Try to match by channel (paired tunnels have same channel)
-                if data.tunnelChannel then
-                    for i, tunnel in ipairs(tunnels) do
-                        local okc, ch = pcall(tunnel.getChannel, tunnel)
-                        if okc and ch and ch == data.tunnelChannel then
-                            sourceTunnel = tunnel
-                            addToLog("  Matched tunnel #" .. i .. " by channel", "SUCCESS")
-                            break
-                        end
-                    end
-                end
+            if data.tunnelChannel then
+                sourceTunnel = findTunnelByChannel(data.tunnelChannel)
+                if sourceTunnel then addToLog("Matched tunnel by channel: " .. tostring(data.tunnelChannel):sub(1,16), "SUCCESS") end
             end
-            
-            -- If still no match, try to find from registered clients
             if not sourceTunnel and data.tunnelAddress then
-                local client = registeredClients[data.tunnelAddress]
-                if client then
-                    sourceTunnel = client.tunnel
-                    addToLog("  Using registered tunnel", "DEBUG")
+                local reg = registeredClients[data.tunnelAddress]
+                if reg then
+                    sourceTunnel = reg.tunnel
+                    addToLog("Using registered tunnel for client", "DEBUG")
                 end
             end
-            
-            -- Last resort: use first tunnel (for single-tunnel setups)
             if not sourceTunnel and #tunnels == 1 then
                 sourceTunnel = tunnels[1]
-                addToLog("  Using only available tunnel", "DEBUG")
+                addToLog("Using only available tunnel (fallback)", "DEBUG")
             end
-            
             if not sourceTunnel then
-                addToLog("ERROR: Cannot determine source tunnel for client message!", "ERROR")
-                addToLog("  Client tunnel: " .. tostring(data.tunnelAddress), "ERROR")
-                addToLog("  Available tunnels: " .. #tunnels, "ERROR")
+                addToLog("ERROR: Could not determine source tunnel for client message", "ERROR")
                 stats.activeThreads = stats.activeThreads - 1
                 return
             end
-            
-            -- Handle client registration
+
+            -- registration handling
             if data.type == "client_register" then
-                local clientTunnelAddr = data.tunnelAddress or data.clientId or sender
-                
-                addToLog("Client tunnel: " .. tostring(clientTunnelAddr):sub(1, 8), "CLIENT")
-                
-                -- Use client's tunnel address as their ID
-                local clientId = clientTunnelAddr
-                
+                local clientId = data.tunnelAddress or data.clientId or tostring(sender)
                 registeredClients[clientId] = {
-                    tunnel = sourceTunnel,           -- The relay tunnel that received this
-                    clientTunnelAddress = clientTunnelAddr,  -- Client's tunnel address
-                    relayTunnelAddress = sourceTunnel.address, -- Relay's tunnel address
+                    tunnel = sourceTunnel,
+                    clientTunnelAddress = data.tunnelAddress,
+                    relayTunnelAddress = sourceTunnel.address,
                     lastSeen = os.time()
                 }
-                
-                addToLog("CLIENT REGISTERED: " .. clientId:sub(1, 8), "SUCCESS")
-                addToLog("  Client tunnel: " .. clientTunnelAddr:sub(1,16), "SUCCESS")
-                addToLog("  Relay tunnel: " .. sourceTunnel.address:sub(1,16), "SUCCESS")
-                local okc, ch = pcall(sourceTunnel.getChannel, sourceTunnel)
-                if okc and ch then
-                    addToLog("  Channel: " .. tostring(ch):sub(1,16), "SUCCESS")
-                end
-                
-                -- Send acknowledgment back to client via same tunnel
-                local ack = {
-                    type = "relay_ack",
-                    relay_name = RELAY_NAME,
-                    server_connected = serverAddress ~= nil
-                }
-                
+                addToLog("CLIENT REGISTERED: " .. clientId:sub(1,8), "SUCCESS")
+                -- send ack
+                local ack = { type = "relay_ack", relay_name = RELAY_NAME, server_connected = (serverAddress ~= nil) }
                 local ackMsg = serialization.serialize(ack)
-                local sendOk, sendErr = pcall(sourceTunnel.send, ackMsg)
-                
-                if sendOk then
-                    addToLog("  ACK sent via tunnel", "SUCCESS")
-                else
-                    addToLog("  ACK FAILED: " .. tostring(sendErr), "ERROR")
-                end
-                
-                updateDisplay()
+                local oksend, errsend = pcall(sourceTunnel.send, ackMsg)
+                if oksend then addToLog("ACK to client sent", "SUCCESS") else addToLog("ACK send failed: " .. tostring(errsend), "ERROR") end
                 stats.activeThreads = stats.activeThreads - 1
+                updateDisplay()
                 return
             end
-            
-            -- Handle client deregistration
-            if data.type == "client_deregister" or data.type == "client_disconnect" then
-                local clientId = data.tunnelAddress or data.clientId or sender
-                registeredClients[clientId] = nil
-                
-                addToLog("CLIENT DISCONNECTED: " .. clientId:sub(1, 8), "CLIENT")
-                updateDisplay()
+
+            if data.type == "client_disconnect" or data.type == "client_deregister" then
+                local cid = data.tunnelAddress or data.clientId or tostring(sender)
+                registeredClients[cid] = nil
+                addToLog("CLIENT DISCONNECTED: " .. tostring(cid):sub(1,8), "CLIENT")
                 stats.activeThreads = stats.activeThreads - 1
+                updateDisplay()
                 return
             end
-            
-            -- Regular message forwarding to server
+
+            -- forward to server (ensure server known)
             if not serverAddress then
-                addToLog("NO SERVER - attempting discovery", "ERROR")
+                addToLog("No server known - starting discovery", "ERROR")
                 if not findServer() then
-                    addToLog("SERVER DISCOVERY FAILED", "ERROR")
-                    -- Send error back to client via same tunnel
-                    if sourceTunnel then
-                        local errorMsg = serialization.serialize({
-                            type = "response",
-                            success = false,
-                            message = "Relay cannot reach server"
-                        })
-                        pcall(sourceTunnel.send, errorMsg)
-                    end
+                    addToLog("Server discovery failed; returning error to client", "ERROR")
+                    local errMsg = serialization.serialize({ type = "response", success = false, message = "Relay cannot reach server" })
+                    pcall(sourceTunnel.send, errMsg)
                     stats.activeThreads = stats.activeThreads - 1
                     return
-                else
-                    addToLog("SERVER FOUND: " .. tostring(serverAddress), "SUCCESS")
                 end
             end
-            
-            -- Forward to server via wireless WITH ENCRYPTION
-            addToLog("→ SERVER: Forwarding (PLAINTEXT): " .. tostring(message), "SERVER")
-            
-            -- Encrypt before sending
-            local encryptedMessage = encryptMessage(message)
-            addToLog("→ SERVER: Forwarding (ENCRYPTED): " .. tostring(encryptedMessage), "DEBUG")
-            
-            local sendOk, sendErr = pcall(modem.send, serverAddress, PORT, encryptedMessage)
+
+            -- Forward (plaintext logged, encrypted for wireless)
+            addToLog("→ SERVER (PLAINTEXT): " .. tostring(message), "SERVER")
+            local encrypted = encryptMessage(message)
+            addToLog("→ SERVER (ENCRYPTED): " .. tostring(encrypted), "DEBUG")
+
+            local sendOk, sendErr = pcall(modem.send, serverAddress, PORT, encrypted)
             if sendOk then
                 stats.messagesForwarded = stats.messagesForwarded + 1
-                addToLog("  Wireless send: SUCCESS (encrypted)", "SUCCESS")
-                
-                -- Store which tunnel sent this so we can reply to them
-                -- We'll use the sender's client tunnel address as a key
+                addToLog("Wireless send successful", "SUCCESS")
+                -- record last sender tunnel to route response
                 local lastKey = data.tunnelAddress or data.clientId or tostring(sourceTunnel.address)
                 registeredClients["_last_sender"] = sourceTunnel
                 registeredClients["_last_sender_key"] = lastKey
             else
-                addToLog("  Wireless send FAILED: " .. tostring(sendErr), "ERROR")
+                addToLog("Wireless send failed: " .. tostring(sendErr), "ERROR")
             end
-            
+
         else
-            -- ==========================================
-            -- FROM SERVER (via wireless) - ENCRYPTED
-            -- ==========================================
+            -- SERVER → RELAY (encrypted over wireless)
             if port ~= PORT then
                 stats.activeThreads = stats.activeThreads - 1
                 return
             end
-            
-            addToLog("← SERVER (Wireless, encrypted)", "SERVER")
-            
-            -- DEBUG: Show encrypted payload
+
+            addToLog("← SERVER (wireless, encrypted): " .. tostring(message), "SERVER")
             addToLog("SERVER → RELAY (ENCRYPTED): " .. tostring(message), "DEBUG")
-            
-            -- Decrypt the message first
-            local decryptedMessage = decryptMessage(message)
-            
-            -- DEBUG: Show decrypted payload (plaintext)
-            addToLog("SERVER → RELAY (DECRYPTED): " .. tostring(decryptedMessage), "DEBUG")
-            
-            if not decryptedMessage then
-                addToLog("  Decryption FAILED", "ERROR")
+
+            local dec = decryptMessage(message)
+            addToLog("SERVER → RELAY (DECRYPTED): " .. tostring(dec), "DEBUG")
+
+            if not dec then
+                addToLog("Decryption of server message failed", "ERROR")
                 stats.activeThreads = stats.activeThreads - 1
                 return
             end
-            
-            addToLog("  Decrypted successfully", "SUCCESS")
-            
-            if sender == serverAddress then
-                -- Message from server - forward to client via tunnel
-                -- Use the last tunnel that sent us a message
-                local targetTunnel = registeredClients["_last_sender"]
-                
-                if targetTunnel then
-                    addToLog("→ CLIENT: Forwarding via tunnel (PLAINTEXT)", "CLIENT")
-                    addToLog("RELAY → CLIENT (PLAINTEXT): " .. tostring(decryptedMessage), "DEBUG")
-                    
-                    -- Send DECRYPTED message to client (tunnel is secure)
-                    local sendOk, sendErr = pcall(targetTunnel.send, decryptedMessage)
-                    if sendOk then
-                        stats.messagesToClient = stats.messagesToClient + 1
-                        addToLog("  Tunnel send: SUCCESS", "SUCCESS")
-                    else
-                        addToLog("  Tunnel send FAILED: " .. tostring(sendErr), "ERROR")
-                    end
-                else
-                    addToLog("No target tunnel for response!", "ERROR")
-                    -- Optionally, broadcast or log the message for investigation
-                end
-            else
-                addToLog("Unknown sender: " .. tostring(sender):sub(1, 16), "ERROR")
-                -- Might be server response during discovery
-                local success, data = pcall(serialization.unserialize, decryptedMessage)
-                if success and data and data.type == "server_response" then
+
+            -- If this is discovery reply, set serverAddress
+            if sender and not serverAddress then
+                local ok, pdata = pcall(serialization.unserialize, dec)
+                if ok and pdata and pdata.type == "server_response" then
                     serverAddress = sender
-                    addToLog("SERVER IDENTIFIED: " .. sender:sub(1, 8), "SUCCESS")
+                    addToLog("Server identified during reply: " .. tostring(sender), "SUCCESS")
                 end
             end
+
+            -- route to last sender tunnel
+            local targetTunnel = registeredClients["_last_sender"]
+            if targetTunnel then
+                addToLog("→ CLIENT (PLAINTEXT): forwarding to last tunnel", "CLIENT")
+                addToLog("RELAY → CLIENT (PLAINTEXT): " .. tostring(dec), "DEBUG")
+                local oksend, errsend = pcall(targetTunnel.send, dec)
+                if oksend then
+                    stats.messagesToClient = stats.messagesToClient + 1
+                    addToLog("Tunnel send to client successful", "SUCCESS")
+                else
+                    addToLog("Tunnel send failed: " .. tostring(errsend), "ERROR")
+                end
+            else
+                addToLog("No target tunnel recorded for server response", "ERROR")
+            end
         end
-        
+
         updateDisplay()
         stats.activeThreads = stats.activeThreads - 1
-    end):detach()  -- Detach thread so it doesn't block relay
+    end):detach()
 end
 
--- Main
+-- ==========================
+-- KEY HANDLER (toggle debug)
+-- ==========================
+local function keyHandler(_, _, char, code, player)
+    -- char may be numeric (unicode codepoint) or nil; it may also be string in some environments
+    local ch = nil
+    if type(char) == "number" then
+        pcall(function() ch = string.char(char) end)
+    elseif type(char) == "string" then
+        ch = char
+    end
+    if ch and ch:lower() == "d" then
+        DEBUG = not DEBUG
+        addToLog("Debug toggled: " .. (DEBUG and "ON" or "OFF"), "DEBUG")
+        updateDisplay()
+    end
+end
+
+-- ==========================
+-- MAIN
+-- ==========================
 local function main()
-    print("Starting Multi-Client Currency Relay (Encrypted, DEBUG PLAINTEXT)...")
-    print("Relay Name: " .. RELAY_NAME)
-    print("")
-    
-    -- Open port
+    print("Starting Multi-Client Currency Relay (Encrypted, DEBUG+FILE) ...")
+    print("Relay: " .. RELAY_NAME)
     modem.open(PORT)
     modem.setStrength(400)
-    print("Wireless port " .. PORT .. " opened (range: 400)")
-    print("Encryption: AES (Data Card)")
-    
-    print("")
-    print("Linked Cards Installed:")
-    for i, tunnel in ipairs(tunnels) do
-        local ok, ch = pcall(tunnel.getChannel, tunnel)
-        if ok then
-            print("  [" .. i .. "] Channel: " .. tostring(ch))
-        else
-            print("  [" .. i .. "] Channel: (unknown)")
-        end
-        print("      Address: " .. tostring(tunnel.address))
-    end
-    print("")
-    print("Each client needs a PAIRED linked card!")
-    print("Pair " .. #tunnels .. " linked cards and give them to clients.")
-    print("")
-    
-    -- Find server
-    print("Searching for server...")
-    if findServer() then
-        print("✓ Server found!")
-    else
-        print("✗ Server not found - will keep trying")
-    end
-    
-    print("")
-    print("Relay running! Press Ctrl+C to stop")
-    print("Waiting for client messages via tunnels...")
-    print("Server communication is ENCRYPTED")
-    print("")
-    
-    -- Start heartbeat
-    thread.create(serverHeartbeat):detach()
-    
-    -- Listen for ALL modem messages (both tunnel and wireless)
-    event.listen("modem_message", handleMessage)
-    
+    addToLog("Relay started on wireless port " .. PORT, "SUCCESS")
+    addToLog("Linked cards: " .. tostring(#tunnels), "INFO")
     updateDisplay()
-    
-    addToLog("Multi-Client relay started (" .. #tunnels .. " cards, encrypted, debug on)", "SUCCESS")
-    
-    -- Keep running
+
+    -- start heartbeat in background
+    thread.create(serverHeartbeat):detach()
+
+    -- listen for incoming modem messages
+    event.listen("modem_message", handleMessage)
+    -- listen for key presses to toggle debug
+    event.listen("key_down", keyHandler)
+
+    addToLog("Listeners registered: modem_message, key_down", "INFO")
+
+    -- run forever
     while true do
         os.sleep(1)
         stats.uptime = stats.uptime + 1
-        
-        -- Cleanup stale clients (haven't sent anything in 5 minutes)
+
+        -- cleanup stale clients (not seen recently)
         local now = os.time()
         for clientId, client in pairs(registeredClients) do
             if clientId ~= "_last_sender" and client.lastSeen then
                 if now - client.lastSeen > 300 then
                     registeredClients[clientId] = nil
-                    addToLog("Client timeout: " .. clientId:sub(1, 8), "CLIENT")
+                    addToLog("Client timed out: " .. tostring(clientId):sub(1,8), "CLIENT")
                 end
             end
         end
     end
 end
 
-local success, err = pcall(main)
-if not success then
-    print("Error: " .. tostring(err))
+local ok, err = pcall(main)
+if not ok then
+    addToLog("Relay crashed: " .. tostring(err), "ERROR")
+    print("Relay crashed: " .. tostring(err))
 end
 
-event.ignore("modem_message", handleMessage)
-modem.close(PORT)
-print("Relay stopped")
+-- cleanup handlers (in case of exit)
+pcall(event.ignore, "modem_message", handleMessage)
+pcall(event.ignore, "key_down", keyHandler)
+pcall(modem.close, PORT)
+addToLog("Relay stopped", "INFO")
