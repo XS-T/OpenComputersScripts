@@ -25,30 +25,35 @@ local modem = component.modem
 local data = component.data
 
 -- Encryption key (must match server)
-local ENCRYPTION_KEY = "ec33be7bfbdfcca4e383eb6d66cd8698789589e01c14dad04d59e7486b8a1604"
-local ENCRYPTION_IV = "196d9705f55fa5df003f87ae8b8bb5b7"
+local SERVER_NAME = "Empire Credit Union"
+local ENCRYPTION_KEY = data.md5(SERVER_NAME .. "RelaySecure2024")
 -- Encryption functions
-local function encryptMessage(message)
-    -- Encrypt using AES-256
-    local encrypted = data.encrypt(message, ENCRYPTION_KEY, ENCRYPTION_IV)
-    -- Prepend IV to encrypted data
-    return iv .. encrypted
-end
-
-local function decryptMessage(encryptedData)
-    if not encryptedData or #encryptedData < 16 then
+local function encryptMessage(plaintext)
+    if not plaintext or plaintext == "" then
         return nil
     end
-    -- Extract IV (first 16 bytes)
-    local iv = encryptedData:sub(1, 16)
-    -- Extract encrypted content (rest)
-    local encrypted = encryptedData:sub(17)
-    -- Decrypt
-    local success, decrypted = pcall(data.decrypt, encrypted, ENCRYPTION_KEY, iv)
-    if success then
-        return decrypted
+    local iv = data.random(16)
+    local encrypted = data.encrypt(plaintext, ENCRYPTION_KEY, iv)
+    return data.encode64(iv .. encrypted)
+end
+
+local function decryptMessage(ciphertext)
+    if not ciphertext or ciphertext == "" then
+        return nil
     end
-    return nil
+    
+    local success, result = pcall(function()
+        local combined = data.decode64(ciphertext)
+        local iv = combined:sub(1, 16)
+        local encrypted = combined:sub(17)
+        return data.decrypt(encrypted, ENCRYPTION_KEY, iv)
+    end)
+    
+    if success then
+        return result
+    else
+        return nil
+    end
 end
 
 -- Get ALL tunnel components (linked cards)
