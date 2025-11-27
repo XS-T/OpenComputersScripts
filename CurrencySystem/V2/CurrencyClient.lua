@@ -458,9 +458,19 @@ local function applyForLoan()
     showStatus("⟳ Processing loan application...", "info")
     local response = sendAndWait({command = "apply_loan", username = username, password = password, amount = amount, term = term})
     if response and response.success then
-        balance = response.balance
-        showStatus("✓ Loan approved! ID: " .. response.loanId, "success")
-        os.sleep(3)
+        clearScreen()
+        drawHeader("◆ LOAN APPLICATION SUBMITTED ◆", username)
+        drawBox(15, 8, 50, 10, colors.bg)
+        gpu.setForeground(colors.success)
+        centerText(10, "✓ Application Submitted!")
+        gpu.setForeground(colors.text)
+        centerText(12, "Application ID: " .. response.pendingId)
+        gpu.setForeground(colors.textDim)
+        centerText(14, "Your loan is pending admin approval")
+        centerText(15, "You will be notified when processed")
+        centerText(17, "Press Enter to continue")
+        drawFooter("Loan Application • Pending")
+        io.read()
     else
         showStatus("✗ " .. (response and response.message or "Application failed"), "error")
         os.sleep(2)
@@ -581,6 +591,265 @@ local function loanMenu()
     end
 end
 
+-- Admin Functions
+local function getPendingLoans()
+    local response = sendAndWait({command = "get_pending_loans", username = username, password = password})
+    if response and response.success then
+        return response.pendingLoans or {}
+    end
+    return {}
+end
+
+local function approveLoan(pendingId)
+    return sendAndWait({command = "approve_loan", username = username, password = password, pendingId = pendingId})
+end
+
+local function denyLoan(pendingId, reason)
+    return sendAndWait({command = "deny_loan", username = username, password = password, pendingId = pendingId, reason = reason})
+end
+
+local function viewPendingLoansUI()
+    clearScreen()
+    drawHeader("◆ PENDING LOAN APPLICATIONS ◆", "Review and approve/deny")
+    
+    showStatus("⟳ Loading applications...", "info")
+    local pending = getPendingLoans()
+    
+    if #pending == 0 then
+        drawBox(20, 10, 40, 5, colors.bg)
+        gpu.setForeground(colors.success)
+        centerText(12, "✓ No pending applications")
+        gpu.setForeground(colors.textDim)
+        centerText(14, "Press any key to return")
+        drawFooter("Admin Panel • No pending loans")
+        event.pull("key_down")
+        return
+    end
+    
+    local currentIndex = 1
+    
+    while true do
+        clearScreen()
+        drawHeader("◆ PENDING LOAN APPLICATIONS ◆", string.format("Application %d of %d", currentIndex, #pending))
+        
+        local app = pending[currentIndex]
+        
+        drawBox(10, 6, 60, 16, colors.bg)
+        
+        gpu.setForeground(colors.accent)
+        gpu.set(12, 7, "Application ID: " .. app.pendingId)
+        
+        gpu.setForeground(colors.text)
+        gpu.set(12, 9, "User: " .. app.username)
+        
+        local ratingColor = colors.textDim
+        if app.creditRating == "EXCELLENT" then ratingColor = colors.excellent
+        elseif app.creditRating == "GOOD" then ratingColor = colors.good
+        elseif app.creditRating == "FAIR" then ratingColor = colors.fair
+        elseif app.creditRating == "POOR" or app.creditRating == "BAD" then ratingColor = colors.poor
+        end
+        
+        gpu.setForeground(colors.textDim)
+        gpu.set(12, 10, "Credit Score: ")
+        gpu.setForeground(ratingColor)
+        gpu.set(26, 10, app.creditScore .. " (" .. app.creditRating .. ")")
+        
+        gpu.setForeground(colors.textDim)
+        gpu.set(12, 12, "Amount Requested:")
+        gpu.setForeground(colors.text)
+        gpu.set(35, 12, string.format("%.2f CR", app.amount))
+        
+        gpu.setForeground(colors.textDim)
+        gpu.set(12, 13, "Loan Term:")
+        gpu.setForeground(colors.text)
+        gpu.set(35, 13, app.termDays .. " days")
+        
+        gpu.setForeground(colors.textDim)
+        gpu.set(12, 14, "Interest Rate:")
+        gpu.setForeground(colors.text)
+        gpu.set(35, 14, string.format("%.1f%%", app.interestRate * 100))
+        
+        gpu.setForeground(colors.textDim)
+        gpu.set(12, 15, "Interest Amount:")
+        gpu.setForeground(colors.text)
+        gpu.set(35, 15, string.format("%.2f CR", app.interest))
+        
+        gpu.setForeground(colors.textDim)
+        gpu.set(12, 16, "Total to Repay:")
+        gpu.setForeground(colors.warning)
+        gpu.set(35, 16, string.format("%.2f CR", app.totalOwed))
+        
+        local timeAgo = os.time() - app.appliedDate
+        local hoursAgo = math.floor(timeAgo / 3600)
+        local timeStr
+        if hoursAgo < 1 then
+            timeStr = "Just now"
+        elseif hoursAgo == 1 then
+            timeStr = "1 hour ago"
+        elseif hoursAgo < 24 then
+            timeStr = hoursAgo .. " hours ago"
+        else
+            local daysAgo = math.floor(hoursAgo / 24)
+            timeStr = daysAgo .. " day" .. (daysAgo > 1 and "s" or "") .. " ago"
+        end
+        
+        gpu.setForeground(colors.textDim)
+        gpu.set(12, 18, "Applied: " .. timeStr)
+        
+        gpu.setForeground(colors.success)
+        gpu.set(12, 20, "[A] Approve")
+        gpu.setForeground(colors.error)
+        gpu.set(30, 20, "[D] Deny")
+        gpu.setForeground(colors.textDim)
+        gpu.set(45, 20, "[N] Next")
+        gpu.set(58, 20, "[ESC] Back")
+        
+        drawFooter("Admin Panel • Pending: " .. #pending)
+        
+        local _, _, char, code = event.pull("key_down")
+        
+        if code == 1 then
+            return
+        elseif char == string.byte('a') or char == string.byte('A') then
+            gpu.setForeground(colors.warning)
+            gpu.set(12, 22, "Confirm approval? (Y/N)")
+            local _, _, confirmChar = event.pull("key_down")
+            if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
+                showStatus("⟳ Approving loan...", "info")
+                local response = approveLoan(app.pendingId)
+                if response and response.success then
+                    showStatus("✓ Loan approved! Loan ID: " .. response.loanId, "success")
+                    os.sleep(2)
+                    pending = getPendingLoans()
+                    if #pending == 0 then return end
+                    currentIndex = math.min(currentIndex, #pending)
+                else
+                    showStatus("✗ " .. (response and response.message or "Failed"), "error")
+                    os.sleep(2)
+                end
+            end
+        elseif char == string.byte('d') or char == string.byte('D') then
+            clearScreen()
+            drawHeader("◆ DENY LOAN APPLICATION ◆", app.pendingId)
+            drawBox(15, 8, 50, 8, colors.bg)
+            gpu.setForeground(colors.text)
+            local reason = input("Reason:  ", 10, false, 40)
+            if reason and reason ~= "" then
+                gpu.setForeground(colors.warning)
+                gpu.set(17, 14, "Confirm denial? (Y/N)")
+                local _, _, confirmChar = event.pull("key_down")
+                if confirmChar == string.byte('y') or confirmChar == string.byte('Y') then
+                    showStatus("⟳ Denying loan...", "info")
+                    local response = denyLoan(app.pendingId, reason)
+                    if response and response.success then
+                        showStatus("✓ Loan denied", "success")
+                        os.sleep(2)
+                        pending = getPendingLoans()
+                        if #pending == 0 then return end
+                        currentIndex = math.min(currentIndex, #pending)
+                    else
+                        showStatus("✗ " .. (response and response.message or "Failed"), "error")
+                        os.sleep(2)
+                    end
+                end
+            end
+        elseif char == string.byte('n') or char == string.byte('N') then
+            currentIndex = currentIndex + 1
+            if currentIndex > #pending then currentIndex = 1 end
+        end
+    end
+end
+
+local function adminPanel()
+    -- First verify with server that we're actually an admin
+    showStatus("⟳ Verifying admin access...", "info")
+    local verifyResponse = sendAndWait({command = "get_pending_loans", username = username, password = password})
+    
+    if not verifyResponse or not verifyResponse.success then
+        clearScreen()
+        drawHeader("◆ ACCESS DENIED ◆")
+        drawBox(20, 10, 40, 6, colors.bg)
+        gpu.setForeground(colors.error)
+        centerText(12, "⚠ Admin Access Required")
+        gpu.setForeground(colors.textDim)
+        centerText(14, verifyResponse and verifyResponse.message or "You do not have admin privileges")
+        centerText(16, "Press Enter to continue")
+        drawFooter("Access Denied")
+        io.read()
+        return
+    end
+    
+    while true do
+        clearScreen()
+        drawHeader("◆ ADMIN PANEL ◆", "Administrative Functions")
+        
+        drawBox(20, 8, 40, 12, colors.bg)
+        
+        gpu.setForeground(colors.warning)
+        gpu.set(22, 9, "⭐ ADMIN ACCESS ⭐")
+        
+        gpu.setForeground(colors.text)
+        gpu.set(25, 12, "1  View Pending Loans")
+        
+        local pending = getPendingLoans()
+        local pendingCount = #pending
+        if pendingCount > 0 then
+            gpu.setForeground(colors.warning)
+            gpu.set(50, 12, "(" .. pendingCount .. ")")
+        end
+        
+        gpu.setForeground(colors.textDim)
+        gpu.set(25, 14, "2  View Server Stats")
+        gpu.set(25, 16, "3  Admin Help")
+        
+        gpu.setForeground(colors.text)
+        gpu.set(25, 18, "0  Back to Main Menu")
+        
+        drawFooter("Admin Panel • User: " .. username .. " • Pending: " .. pendingCount)
+        
+        local _, _, char = event.pull("key_down")
+        
+        if char == string.byte('1') then
+            viewPendingLoansUI()
+        elseif char == string.byte('2') then
+            clearScreen()
+            drawHeader("◆ SERVER STATISTICS ◆")
+            drawBox(20, 8, 40, 8, colors.bg)
+            gpu.setForeground(colors.textDim)
+            centerText(10, "Use server F5 admin panel")
+            centerText(11, "for full server statistics")
+            centerText(13, "and management tools")
+            gpu.setForeground(colors.text)
+            centerText(15, "Press any key to return")
+            drawFooter("Admin Panel")
+            event.pull("key_down")
+        elseif char == string.byte('3') then
+            clearScreen()
+            drawHeader("◆ ADMIN HELP ◆")
+            drawBox(10, 6, 60, 14, colors.bg)
+            gpu.setForeground(colors.text)
+            gpu.set(12, 7, "Client Admin Functions:")
+            gpu.setForeground(colors.textDim)
+            gpu.set(12, 9, "• View Pending Loans - Review loan applications")
+            gpu.set(12, 10, "• Approve/Deny - Accept or reject applications")
+            gpu.set(12, 11, "• Notifications - Get alerts for new requests")
+            gpu.setForeground(colors.text)
+            gpu.set(12, 13, "Server Admin Panel (F5 on server):")
+            gpu.setForeground(colors.textDim)
+            gpu.set(12, 14, "• Full account management")
+            gpu.set(12, 15, "• Loan forgiveness & credit adjustment")
+            gpu.set(12, 16, "• System configuration & RAID")
+            gpu.set(12, 17, "• Toggle admin status for users")
+            gpu.setForeground(colors.text)
+            centerText(19, "Press any key to return")
+            drawFooter("Admin Panel • Help")
+            event.pull("key_down")
+        elseif char == string.byte('0') then
+            return
+        end
+    end
+end
+
 local function mainMenu()
     while loggedIn do
         clearScreen()
@@ -597,7 +866,10 @@ local function mainMenu()
         gpu.set(25, menuY, "1  Check Balance")
         gpu.set(25, menuY + 2, "2  Transfer Funds")
         gpu.set(25, menuY + 4, "3  Loan Center")
-        gpu.set(25, menuY + 6, "4  Logout")
+        gpu.setForeground(colors.warning)
+        gpu.set(25, menuY + 6, "4  Admin Panel")
+        gpu.setForeground(colors.text)
+        gpu.set(25, menuY + 8, "0  Logout")
         drawFooter("Account: " .. username .. " • Connected")
         local _, _, char = event.pull("key_down")
         if char == string.byte('1') then
@@ -658,6 +930,10 @@ local function mainMenu()
         elseif char == string.byte('3') then
             loanMenu()
         elseif char == string.byte('4') then
+            -- Try to access admin panel - server will verify
+            adminPanel()
+        elseif char == string.byte('0') then
+            -- Logout
             showStatus("⟳ Logging out...", "info")
             sendAndWait({command = "logout", username = username, password = password})
             local disconnect = serialization.serialize({
