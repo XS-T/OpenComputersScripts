@@ -53,10 +53,13 @@ local RELAY_ENCRYPTION_KEY = RELAY_ENCRYPTION_KEY_BASE .. string.rep("\0", 32 - 
 -- Relay encryption functions
 local function encryptRelayMessage(message)
     -- Generate random 16-byte IV (128 bits)
-    local iv = data.random(16)
-    -- Encrypt using AES with the IV and key
+    local iv = ""
+    for i = 1, 16 do
+        iv = iv .. string.char(math.random(0, 255))
+    end
+    -- Encrypt using AES-256
     local encrypted = data.encrypt(message, RELAY_ENCRYPTION_KEY, iv)
-    -- Prepend IV to encrypted data (IV is not secret)
+    -- Prepend IV to encrypted data
     return iv .. encrypted
 end
 
