@@ -43,6 +43,32 @@ local LOAN_CONFIG = {
 }
 
 local modem = component.modem
+local data = component.data
+
+-- Encryption key for relay communication (must match relay)
+local RELAY_ENCRYPTION_KEY = "RelayServerSecureKey2025"
+
+-- Relay encryption functions
+local function encryptRelayMessage(message)
+    local iv = data.random(16)
+    local encrypted = data.encrypt(message, iv, RELAY_ENCRYPTION_KEY)
+    -- Prepend IV to encrypted data
+    return iv .. encrypted
+end
+
+local function decryptRelayMessage(encryptedData)
+    if not encryptedData or #encryptedData < 16 then
+        return nil
+    end
+    local iv = encryptedData:sub(1, 16)
+    local encrypted = encryptedData:sub(17)
+    local success, decrypted = pcall(data.decrypt, encrypted, iv, RELAY_ENCRYPTION_KEY)
+    if success then
+        return decrypted
+    end
+    return nil
+end
+
 local accounts = {}
 local transactionLog = {}
 local accountIndex = {}
@@ -1942,12 +1968,24 @@ end
 -- Network message handler
 local function handleMessage(eventType, _, sender, port, distance, message)
     if port ~= PORT then return end
-    local success, data = pcall(serialization.unserialize, message)
+    
+    -- Try to decrypt the message (from relay)
+    local decryptedMessage = decryptRelayMessage(message)
+    local isEncrypted = (decryptedMessage ~= nil)
+    
+    -- If decryption failed, try as plaintext (backward compatibility or direct connection)
+    local messageToProcess = decryptedMessage or message
+    
+    local success, data = pcall(serialization.unserialize, messageToProcess)
     if not success or not data then return end
+    
     if data.type == "relay_ping" then
         registerRelay(sender, data.relay_name or "Unknown")
         local response = {type = "server_response", serverName = SERVER_NAME}
-        modem.send(sender, PORT, serialization.serialize(response))
+        local serializedResponse = serialization.serialize(response)
+        -- Encrypt response if incoming was encrypted
+        local responseToSend = isEncrypted and encryptRelayMessage(serializedResponse) or serializedResponse
+        modem.send(sender, PORT, responseToSend)
         if not adminMode then drawServerUI() end
         return
     end
@@ -2446,7 +2484,10 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             response.message = "Logged out successfully"
         end
     end
-    modem.send(sender, PORT, serialization.serialize(response))
+    local serializedResponse = serialization.serialize(response)
+    -- Encrypt response if incoming was encrypted
+    local responseToSend = isEncrypted and encryptRelayMessage(serializedResponse) or serializedResponse
+    modem.send(sender, PORT, responseToSend)
     if not adminMode then drawServerUI() end
 end
 
