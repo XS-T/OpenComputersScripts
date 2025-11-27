@@ -1255,7 +1255,7 @@ end
 local function adminMainMenu()
     clearScreen()
     drawHeader("◆ ADMIN PANEL ◆", "Server Management Console", true)
-    drawBox(15, 5, 50, 20, colors.bg)
+    drawBox(15, 5, 50, 23, colors.bg)
     gpu.setForeground(colors.adminRed)
     gpu.set(17, 6, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     gpu.setForeground(colors.textDim)
