@@ -2,6 +2,7 @@
 -- SUPPORTS MULTIPLE LINKED CARDS with ENCRYPTION + THREADED
 -- Receives from clients via TUNNEL (linked cards)
 -- Forwards to server via WIRELESS (ENCRYPTED)
+-- ⭐ FIXED: Username-based response routing (Option 1)
 
 local component = require("component")
 local event = require("event")
@@ -27,6 +28,7 @@ local data = component.data
 -- Encryption key (must match server)
 local SERVER_NAME = "Empire Credit Union"
 local ENCRYPTION_KEY = data.md5(SERVER_NAME .. "RelaySecure2024")
+
 -- Encryption functions
 local function encryptMessage(plaintext)
     if not plaintext or plaintext == "" then
@@ -306,6 +308,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         
         if not success or not data then
             addToLog("ERROR: Failed to parse message", "ERROR")
+            stats.activeThreads = stats.activeThreads - 1
             return
         end
         
@@ -348,6 +351,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             addToLog("ERROR: Cannot determine source tunnel!", "ERROR")
             addToLog("  Client tunnel: " .. tostring(data.tunnelAddress), "ERROR")
             addToLog("  Available tunnels: " .. #tunnels, "ERROR")
+            stats.activeThreads = stats.activeThreads - 1
             return
         end
         
@@ -392,6 +396,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                 end
                 
                 updateDisplay()
+                stats.activeThreads = stats.activeThreads - 1
                 return
             end
             
@@ -402,6 +407,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                 
                 addToLog("CLIENT DISCONNECTED: " .. clientId:sub(1, 8), "CLIENT")
                 updateDisplay()
+                stats.activeThreads = stats.activeThreads - 1
                 return
             end
         end
@@ -420,6 +426,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                     })
                     pcall(sourceTunnel.send, errorMsg)
                 end
+                stats.activeThreads = stats.activeThreads - 1
                 return
             else
                 addToLog("SERVER FOUND: " .. serverAddress, "SUCCESS")
@@ -437,8 +444,16 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             stats.messagesForwarded = stats.messagesForwarded + 1
             addToLog("  Wireless send: SUCCESS (encrypted)", "SUCCESS")
             
-            -- Store which tunnel sent this so we can reply to them
-            -- We'll use the sender address as a temporary key
+            -- ⭐ OPTION 1 FIX: Store tunnel by USERNAME for routing
+            if data.username then
+                registeredClients["_pending_" .. data.username] = {
+                    tunnel = sourceTunnel,
+                    timestamp = os.time()
+                }
+                addToLog("  Stored tunnel for user: " .. data.username, "DEBUG")
+            end
+            
+            -- Keep fallback for legacy/non-user messages
             registeredClients["_last_sender"] = sourceTunnel
         else
             addToLog("  Wireless send FAILED: " .. tostring(sendErr), "ERROR")
@@ -449,6 +464,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         -- FROM SERVER (via wireless) - ENCRYPTED
         -- ==========================================
         if port ~= PORT then
+            stats.activeThreads = stats.activeThreads - 1
             return
         end
         
@@ -459,6 +475,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         
         if not decryptedMessage then
             addToLog("  Decryption FAILED", "ERROR")
+            stats.activeThreads = stats.activeThreads - 1
             return
         end
         
@@ -466,11 +483,44 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         
         if sender == serverAddress then
             -- Message from server - forward to client via tunnel
-            -- Use the last tunnel that sent us a message
-            local targetTunnel = registeredClients["_last_sender"]
+            
+            -- ⭐ OPTION 1 FIX: Parse response to find username
+            local responseData = nil
+            local parseOk, parsed = pcall(serialization.unserialize, decryptedMessage)
+            if parseOk and parsed then
+                responseData = parsed
+            end
+            
+            -- Try to route by username first
+            local targetTunnel = nil
+            local routingMethod = "unknown"
+            
+            if responseData and responseData.username then
+                local pendingKey = "_pending_" .. responseData.username
+                local pending = registeredClients[pendingKey]
+                
+                if pending and pending.tunnel then
+                    targetTunnel = pending.tunnel
+                    routingMethod = "username (" .. responseData.username .. ")"
+                    
+                    -- Clean up after successful routing
+                    registeredClients[pendingKey] = nil
+                    
+                    addToLog("  Routed by username: " .. responseData.username, "SUCCESS")
+                else
+                    addToLog("  No pending entry for: " .. responseData.username, "DEBUG")
+                end
+            end
+            
+            -- Fallback to last sender if username routing failed
+            if not targetTunnel then
+                targetTunnel = registeredClients["_last_sender"]
+                routingMethod = "fallback"
+                addToLog("  Using fallback routing", "DEBUG")
+            end
             
             if targetTunnel then
-                addToLog("→ CLIENT: Forwarding via tunnel", "CLIENT")
+                addToLog("→ CLIENT: Forwarding via tunnel (" .. routingMethod .. ")", "CLIENT")
                 
                 -- Send DECRYPTED message to client (tunnel is secure)
                 local sendOk, sendErr = pcall(targetTunnel.send, decryptedMessage)
@@ -482,6 +532,10 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                 end
             else
                 addToLog("No target tunnel for response!", "ERROR")
+                if responseData then
+                    addToLog("  Response cmd: " .. tostring(responseData.command or "?"), "ERROR")
+                    addToLog("  Response user: " .. tostring(responseData.username or "MISSING"), "ERROR")
+                end
             end
         else
             addToLog("Unknown sender: " .. sender:sub(1, 16), "ERROR")
@@ -503,6 +557,7 @@ end
 local function main()
     print("Starting Multi-Client Currency Relay (Encrypted)...")
     print("Relay Name: " .. RELAY_NAME)
+    print("Response Routing: Username-based (Option 1)")
     print("")
     
     -- Open port
@@ -554,10 +609,20 @@ local function main()
         -- Cleanup stale clients (haven't sent anything in 5 minutes)
         local now = os.time()
         for clientId, client in pairs(registeredClients) do
-            if clientId ~= "_last_sender" and client.lastSeen then
+            if clientId ~= "_last_sender" and not clientId:match("^_pending_") and client.lastSeen then
                 if now - client.lastSeen > 300 then
                     registeredClients[clientId] = nil
                     addToLog("Client timeout: " .. clientId:sub(1, 8), "CLIENT")
+                end
+            end
+        end
+        
+        -- Cleanup stale pending requests (older than 1 minute)
+        for clientId, client in pairs(registeredClients) do
+            if clientId:match("^_pending_") and client.timestamp then
+                if now - client.timestamp > 60 then
+                    registeredClients[clientId] = nil
+                    addToLog("Pending timeout: " .. clientId, "DEBUG")
                 end
             end
         end
