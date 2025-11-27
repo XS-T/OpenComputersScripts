@@ -395,7 +395,9 @@ local function getLoanEligibility(username)
         initializeCreditScore(username)
         credit = creditScores[username]
     end
+    
     local score = credit.score
+    local rating, _ = getCreditRating(score)  -- ADD THIS LINE
     local maxLoan, interestRate
     if score >= LOAN_CONFIG.EXCELLENT.min then
         maxLoan = LOAN_CONFIG.MAX_LOAN_EXCELLENT
@@ -427,6 +429,7 @@ local function getLoanEligibility(username)
         maxLoan = maxLoan,
         interestRate = interestRate,
         creditScore = score,
+        creditRating = rating,  -- ADD THIS LINE
         activeLoans = activeLoans,
         totalOwed = totalOwed
     }
@@ -463,9 +466,9 @@ local function submitLoanApplication(username, amount, termDays)
         interest = interest,
         totalOwed = totalOwed,
         creditScore = eligibility.creditScore,
-        creditRating = eligibility.creditRating,
+        creditRating = eligibility.creditRating,  -- ADD THIS LINE
         appliedDate = os.time(),
-        status = "pending"  -- pending, approved, denied
+        status = "pending"
     }
     
     pendingLoans[pendingId] = application
@@ -1890,129 +1893,14 @@ local function adminForgiveLoanUI()
     end
 end
 
-local function adminAdjustCreditUI()
-    clearScreen()
-    drawHeader("◆ ADJUST CREDIT SCORE ◆", "Manual credit score modification", true)
-    
-    drawBox(15, 7, 50, 14, colors.bg)
-    
-    gpu.setForeground(colors.warning)
-    gpu.set(17, 8, "⚠ Use with caution!")
-    gpu.setForeground(colors.textDim)
-    gpu.set(17, 9, "  Valid range: 300-850")
-    
-    gpu.setForeground(colors.text)
-    local username = input("Username:   ", 12, false, 25)
-    
-    if not username or username == "" then
-        showStatus("Cancelled", "warning")
-        os.sleep(1)
-        return
-    end
-    
-    local acc = getAccount(username)
-    if not acc then
-        showStatus("✗ Account not found", "error")
-        os.sleep(2)
-        return
-    end
-    
-    local credit = creditScores[username]
-    if not credit then
-        initializeCreditScore(username)
-        credit = creditScores[username]
-    end
-    
-    gpu.setForeground(colors.textDim)
-    local currentRating, _ = getCreditRating(credit.score)
-    gpu.set(17, 14, "Current: " .. credit.score .. " (" .. currentRating .. ")")
-    
-    gpu.setForeground(colors.text)
-    local newScoreStr = input("New Score:  ", 16, false, 5)
-    local newScore = tonumber(newScoreStr)
-    
-    if not newScore or newScore < 300 or newScore > 850 then
-        showStatus("✗ Invalid score (must be 300-850)", "error")
-        os.sleep(2)
-        return
-    end
-    
-    local reason = input("Reason:     ", 18, false, 30)
-    
-    gpu.setForeground(colors.warning)
-    gpu.set(17, 20, "Confirm adjustment? (Y/N)")
-    
-    local _, _, char = event.pull("key_down")
-    
-    if char == string.byte('y') or char == string.byte('Y') then
-        local ok, msg = adminAdjustCredit(username, newScore, reason)
-        if ok then
-            showStatus("✓ Credit score adjusted", "success")
-        else
-            showStatus("✗ " .. msg, "error")
-        end
-        os.sleep(2)
-    else
-        showStatus("Cancelled", "warning")
-        os.sleep(1)
-    end
-end
-
-local function adminToggleAdminUI()
-    clearScreen()
-    drawHeader("◆ TOGGLE ADMIN STATUS ◆", "Grant or revoke admin privileges", true)
-    
-    drawBox(15, 7, 50, 10, colors.bg)
-    
-    gpu.setForeground(colors.warning)
-    gpu.set(17, 8, "⚠ Admin users can approve loans and access admin panel!")
-    
-    gpu.setForeground(colors.text)
-    local username = input("Username: ", 12, false, 25)
-    
-    if not username or username == "" then
-        showStatus("Cancelled", "warning")
-        os.sleep(1)
-        return
-    end
-    
-    local acc = getAccount(username)
-    if not acc then
-        showStatus("✗ Account not found", "error")
-        os.sleep(2)
-        return
-    end
-    
-    gpu.setForeground(colors.textDim)
-    local currentStatus = acc.isAdmin and "YES" or "NO"
-    local newStatus = acc.isAdmin and "NO" or "YES"
-    gpu.set(17, 14, "Current admin status: " .. currentStatus)
-    gpu.set(17, 15, "New admin status:     " .. newStatus)
-    
-    gpu.setForeground(colors.warning)
-    gpu.set(17, 17, "Confirm change? (Y/N)")
-    
-    local _, _, char = event.pull("key_down")
-    
-    if char == string.byte('y') or char == string.byte('Y') then
-        local ok, msg = adminToggleAdminStatus(username)
-        if ok then
-            showStatus("✓ Admin status updated", "success")
-        else
-            showStatus("✗ " .. msg, "error")
-        end
-        os.sleep(2)
-    else
-        showStatus("Cancelled", "warning")
-        os.sleep(1)
-    end
-end
+-- COMPLETE FIXED VERSION - Replace your entire adminViewPendingLoansUI function with this
 
 local function adminViewPendingLoansUI()
     while true do
         clearScreen()
         drawHeader("◆ PENDING LOAN APPLICATIONS ◆", "Awaiting approval/denial", true)
         
+        -- ⭐ Get fresh list every loop iteration
         local pendingList = getPendingLoans()
         
         if #pendingList == 0 then
@@ -2082,6 +1970,7 @@ local function adminViewPendingLoansUI()
         
         if char == string.byte('0') then
             return
+            
         elseif char == string.byte('a') or char == string.byte('A') then
             -- Approve loan
             clearScreen()
@@ -2121,10 +2010,12 @@ local function adminViewPendingLoansUI()
                         if ok then
                             showStatus("✓ Loan approved: " .. loanIdOrMsg, "success")
                             log("ADMIN: Loan " .. pendingId .. " approved by " .. adminUsername, "ADMIN")
+                            os.sleep(2)
+                            -- ⭐ Loop continues, pendingList refreshed at top
                         else
                             showStatus("✗ " .. loanIdOrMsg, "error")
+                            os.sleep(2)
                         end
-                        os.sleep(2)
                     else
                         showStatus("Cancelled", "warning")
                         os.sleep(1)
@@ -2155,8 +2046,9 @@ local function adminViewPendingLoansUI()
                     gpu.set(17, 14, "Amount: " .. string.format("%.2f CR", app.amount))
                     
                     gpu.setForeground(colors.text)
-                    --local reason = input("Reason:     ", 16, false, 30)
                     local reason = "Contact Admin"
+                    -- Uncomment below if you want custom deny reasons:
+                    --local reason = input("Reason:     ", 16, false, 30)
                     
                     gpu.setForeground(colors.warning)
                     gpu.set(17, 18, "Deny this loan? (Y/N)")
@@ -2176,10 +2068,12 @@ local function adminViewPendingLoansUI()
                         if ok then
                             showStatus("✓ Loan denied", "success")
                             log("ADMIN: Loan " .. pendingId .. " denied by " .. adminUsername, "ADMIN")
+                            os.sleep(2)
+                            -- ⭐ Loop continues, pendingList refreshed at top
                         else
                             showStatus("✗ " .. msg, "error")
+                            os.sleep(2)
                         end
-                        os.sleep(2)
                     else
                         showStatus("Cancelled", "warning")
                         os.sleep(1)
@@ -2223,7 +2117,11 @@ local function adminViewPendingLoansUI()
                     gpu.set(17, y, "Credit Score: " .. app.creditScore)
                     y = y + 1
                     
-                    local rating, _ = getCreditRating(app.creditScore)
+                    -- ⭐ FIX: Handle missing creditRating field
+                    local rating = app.creditRating
+                    if not rating then
+                        rating, _ = getCreditRating(app.creditScore)
+                    end
                     gpu.set(17, y, "Rating: " .. rating)
                     y = y + 2
                     
@@ -2233,6 +2131,10 @@ local function adminViewPendingLoansUI()
                 end
             end
         end
+        
+        -- ⭐ CRITICAL: The while true loop continues here!
+        -- When it loops back to the top, it calls getPendingLoans() again
+        -- This fetches the updated list, so approved/denied loans disappear
     end
 end
 
