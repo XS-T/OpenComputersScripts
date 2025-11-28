@@ -872,4 +872,29 @@ local function main()
     os.sleep(2)
 end
 
-main()
+-- Wrap in pcall to ensure logout on crash
+local function safeMain()
+    local success, err = pcall(main)
+    
+    -- If crashed and still logged in, force logout
+    if not success and loggedIn and username then
+        pcall(function()
+            sendToRelay({
+                command = "logout",
+                username = username,
+                password = password
+            })
+        end)
+        
+        clearScreen()
+        centerText(10, "Error occurred: " .. tostring(err), colors.error)
+        centerText(12, "Logged out safely.", colors.textDim)
+        os.sleep(3)
+    elseif not success then
+        clearScreen()
+        centerText(12, "Error: " .. tostring(err), colors.error)
+        os.sleep(3)
+    end
+end
+
+safeMain()
