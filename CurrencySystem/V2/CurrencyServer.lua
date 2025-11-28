@@ -1,7 +1,7 @@
 -- Currency Server (Banking Only) for OpenComputers 1.7.10
 -- Modular Architecture - Accounts, Transfers, Sessions
 -- PORT 1000 | Responds to loan server requests
--- VERSION 1.0.0
+-- VERSION 1.2.0 - WITH INTER-SERVER ENCRYPTION
 
 local component = require("component")
 local event = require("event")
@@ -36,9 +36,10 @@ local data = component.data
 
 -- Encryption keys
 local RELAY_ENCRYPTION_KEY = data.md5(SERVER_NAME .. "RelaySecure2024")
+local INTER_SERVER_KEY = data.md5("CurrencyLoanServerComm2024")
 local DATA_ENCRYPTION_KEY = data.md5(SERVER_NAME .. "BankingSecurity2024")
 
--- Relay encryption functions
+-- Relay encryption functions (for client communication via relay)
 local function encryptRelayMessage(plaintext)
     if not plaintext or plaintext == "" then return nil end
     local iv = data.random(16)
@@ -53,6 +54,25 @@ local function decryptRelayMessage(ciphertext)
         local iv = combined:sub(1, 16)
         local encrypted = combined:sub(17)
         return data.decrypt(encrypted, RELAY_ENCRYPTION_KEY, iv)
+    end)
+    return success and result or nil
+end
+
+-- Inter-server encryption functions (for currency ↔ loan server)
+local function encryptServerMessage(plaintext)
+    if not plaintext or plaintext == "" then return nil end
+    local iv = data.random(16)
+    local encrypted = data.encrypt(plaintext, INTER_SERVER_KEY, iv)
+    return data.encode64(iv .. encrypted)
+end
+
+local function decryptServerMessage(ciphertext)
+    if not ciphertext or ciphertext == "" then return nil end
+    local success, result = pcall(function()
+        local combined = data.decode64(ciphertext)
+        local iv = combined:sub(1, 16)
+        local encrypted = combined:sub(17)
+        return data.decrypt(encrypted, INTER_SERVER_KEY, iv)
     end)
     return success and result or nil
 end
@@ -691,10 +711,12 @@ local function handleMessage(eventType, _, sender, port, distance, message)
     thread.create(function()
         stats.activeThreads = stats.activeThreads + 1
         
-        -- Decrypt message
-        local decryptedMessage = decryptRelayMessage(message)
-        local isEncrypted = (decryptedMessage ~= nil)
-        local messageToProcess = decryptedMessage or message
+        -- Decrypt message (try both relay and inter-server keys)
+        local decryptedRelay = decryptRelayMessage(message)
+        local decryptedServer = decryptServerMessage(message)
+        local isFromRelay = (decryptedRelay ~= nil)
+        local isFromServer = (decryptedServer ~= nil)
+        local messageToProcess = decryptedRelay or decryptedServer or message
         
         local success, data = pcall(serialization.unserialize, messageToProcess)
         if not success or not data then
@@ -702,32 +724,33 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             return
         end
         
-        -- Handle relay ping
-        if data.type == "relay_ping" then
+        -- Handle relay ping (encrypted from relay)
+        if data.type == "relay_ping" and isFromRelay then
             local response = {type = "server_response", serverName = SERVER_NAME .. " (Currency)"}
             local serializedResponse = serialization.serialize(response)
-            local responseToSend = isEncrypted and encryptRelayMessage(serializedResponse) or serializedResponse
-            modem.send(sender, PORT, responseToSend)
+            local encrypted = encryptRelayMessage(serializedResponse)
+            modem.send(sender, PORT, encrypted)
             stats.activeThreads = stats.activeThreads - 1
             return
         end
         
-        -- Handle loan server discovery
-        if data.type == "loan_server_ping" and port == LOAN_SERVER_PORT then
+        -- Handle loan server discovery (encrypted from loan server)
+        if data.type == "loan_server_ping" and port == LOAN_SERVER_PORT and isFromServer then
             loanServerAddress = sender
             local response = {type = "currency_server_response", serverName = SERVER_NAME}
-            local serializedResponse = serialization.serialize(response)
-            modem.send(sender, LOAN_SERVER_PORT, serializedResponse)
+            local encrypted = encryptServerMessage(serialization.serialize(response))
+            modem.send(sender, LOAN_SERVER_PORT, encrypted)
             log("Loan server connected: " .. sender:sub(1, 8), "SYSTEM")
+            drawServerUI()
             stats.activeThreads = stats.activeThreads - 1
             return
         end
         
-        -- Handle loan server requests (inter-server communication)
-        if data.type == "loan_server_request" then
+        -- Handle loan server requests (encrypted inter-server communication)
+        if data.type == "loan_server_request" and isFromServer then
             local response = handleLoanServerRequest(data)
-            local serializedResponse = serialization.serialize(response)
-            modem.send(sender, LOAN_SERVER_PORT, serializedResponse)
+            local encrypted = encryptServerMessage(serialization.serialize(response))
+            modem.send(sender, LOAN_SERVER_PORT, encrypted)
             stats.activeThreads = stats.activeThreads - 1
             return
         end
@@ -890,9 +913,10 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             response.username = requestUsername
         end
         
+        -- Encrypt response for relay (client requests come from relay)
         local serializedResponse = serialization.serialize(response)
-        local responseToSend = isEncrypted and encryptRelayMessage(serializedResponse) or serializedResponse
-        modem.send(sender, PORT, responseToSend)
+        local encrypted = encryptRelayMessage(serializedResponse)
+        modem.send(sender, PORT, encrypted)
         
         if not adminMode then drawServerUI() end
         stats.activeThreads = stats.activeThreads - 1
