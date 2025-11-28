@@ -1,7 +1,6 @@
 -- Loan Server for OpenComputers 1.7.10
--- CLIENT COMMUNICATION: Via relay only (encrypted)
--- CURRENCY SERVER: Direct wireless (encrypted)
--- VERSION 1.3.0 - FIXED UI & DISCOVERY
+-- WITH ADMIN PANEL for loan approval/denial
+-- VERSION 1.4.0 - COMPLETE WITH ADMIN
 
 local component = require("component")
 local event = require("event")
@@ -15,9 +14,10 @@ local unicode = require("unicode")
 
 local PORT = 1001
 local CURRENCY_SERVER_PORT = 1000
-local SERVER_NAME = "Empire Credit Union"  -- MUST match relay for encryption!
+local SERVER_NAME = "Empire Credit Union"  -- Must match relay for encryption
 local DISPLAY_NAME = "Empire Credit Union - Loans"
 local DATA_DIR = "/home/loans/"
+local DEFAULT_ADMIN_PASSWORD = "LOANS2025"
 
 local LOAN_CONFIG = {
     EXCELLENT = {min = 750, rate = 0.05},
@@ -47,12 +47,12 @@ end
 local modem = component.modem
 local data = component.data
 
--- TWO DIFFERENT ENCRYPTION KEYS!
+-- Encryption keys
 local RELAY_ENCRYPTION_KEY = data.md5(SERVER_NAME .. "RelaySecure2024")
 local INTER_SERVER_KEY = data.md5("CurrencyLoanServerComm2024")
 local DATA_ENCRYPTION_KEY = data.md5(SERVER_NAME .. "LoanSecurity2024")
 
--- Relay encryption (for CLIENT messages via relay)
+-- Relay encryption
 local function encryptRelayMessage(plaintext)
     if not plaintext or plaintext == "" then return nil end
     local iv = data.random(16)
@@ -71,7 +71,7 @@ local function decryptRelayMessage(ciphertext)
     return success and result or nil
 end
 
--- Inter-server encryption (for CURRENCY SERVER messages)
+-- Inter-server encryption
 local function encryptServerMessage(plaintext)
     if not plaintext or plaintext == "" then return nil end
     local iv = data.random(16)
@@ -90,7 +90,7 @@ local function decryptServerMessage(ciphertext)
     return success and result or nil
 end
 
--- Data encryption (for file storage)
+-- Data encryption
 local function encryptData(plaintext)
     if not plaintext or plaintext == "" then return nil end
     local iv = data.random(16)
@@ -109,6 +109,11 @@ local function decryptData(ciphertext)
     return success and result or nil
 end
 
+local function hashPassword(password)
+    if not password or password == "" then return nil end
+    return data.md5(password)
+end
+
 -- State
 local loans = {}
 local loanIndex = {}
@@ -118,6 +123,9 @@ local nextLoanId = 1
 local nextPendingId = 1
 local currencyServerAddress = nil
 local transactionLog = {}
+local adminPasswordHash = nil
+local adminMode = false
+local adminAuthenticated = false
 
 local stats = {
     totalLoans = 0,
@@ -134,7 +142,8 @@ w, h = 80, 25
 
 local colors = {
     bg = 0x0F0F0F, header = 0x1E3A8A, accent = 0x3B82F6, success = 0x10B981,
-    error = 0xEF4444, warning = 0xF59E0B, text = 0xFFFFFF, textDim = 0x9CA3AF
+    error = 0xEF4444, warning = 0xF59E0B, text = 0xFFFFFF, textDim = 0x9CA3AF,
+    adminRed = 0xFF0000, adminBg = 0x1F1F1F
 }
 
 if not filesystem.exists(DATA_DIR) then
@@ -220,7 +229,7 @@ local function recordCreditEvent(username, eventType, description)
     saveCreditScores()
 end
 
--- Currency Server Communication (ENCRYPTED with inter-server key)
+-- Currency Server Communication
 local function callCurrencyServer(command, requestData)
     if not currencyServerAddress then
         return {success = false, message = "Currency server not connected"}
@@ -236,7 +245,6 @@ local function callCurrencyServer(command, requestData)
     
     modem.send(currencyServerAddress, CURRENCY_SERVER_PORT, encrypted)
     
-    -- Wait for response
     local deadline = computer.uptime() + 5
     while computer.uptime() < deadline do
         local eventData = {event.pull(0.5, "modem_message")}
@@ -426,6 +434,25 @@ local function approveLoanApplication(pendingId, adminUsername)
     return true, loanId, loan
 end
 
+local function denyLoanApplication(pendingId, adminUsername, reason)
+    local app = pendingLoans[pendingId]
+    if not app then return false, "Application not found" end
+    if app.status ~= "pending" then return false, "Already processed" end
+    
+    app.status = "denied"
+    app.deniedDate = os.time()
+    app.deniedBy = adminUsername
+    app.denyReason = reason or "Not specified"
+    
+    recordCreditEvent(app.username, "loan_denied", string.format("Application %s denied", pendingId))
+    stats.pendingLoans = stats.pendingLoans - 1
+    
+    log(string.format("Loan DENIED: %s (User: %s)", pendingId, app.username), "LOAN")
+    
+    savePendingLoans()
+    return true, "Application denied"
+end
+
 local function makeLoanPayment(username, loanId, amount)
     local loan = loanIndex[loanId]
     if not loan then return false, "Loan not found" end
@@ -489,7 +516,7 @@ end
 
 -- Save/Load Functions
 function saveConfig()
-    local config = {nextLoanId = nextLoanId, nextPendingId = nextPendingId}
+    local config = {nextLoanId = nextLoanId, nextPendingId = nextPendingId, adminPasswordHash = adminPasswordHash}
     local file = io.open(DATA_DIR .. "loan_config.cfg", "w")
     if file then
         file:write(encryptData(serialization.serialize(config)))
@@ -511,12 +538,14 @@ function loadConfig()
                 if success and config then
                     nextLoanId = config.nextLoanId or 1
                     nextPendingId = config.nextPendingId or 1
+                    adminPasswordHash = config.adminPasswordHash
                     return true
                 end
             end
         end
     end
-    return false
+    adminPasswordHash = hashPassword(DEFAULT_ADMIN_PASSWORD)
+    return saveConfig()
 end
 
 function saveLoans()
@@ -618,13 +647,57 @@ function loadCreditScores()
 end
 
 -- UI Functions
+local function clearScreen()
+    gpu.setBackground(colors.bg)
+    gpu.setForeground(colors.text)
+    gpu.fill(1, 1, w, h, " ")
+end
+
+local function input(prompt, y, hidden, maxLen)
+    maxLen = maxLen or 30
+    gpu.setForeground(colors.text)
+    gpu.set(2, y, prompt)
+    local x = 2 + unicode.len(prompt)
+    gpu.setBackground(0x1F2937)
+    gpu.fill(x, y, maxLen + 2, 1, " ")
+    x = x + 1
+    gpu.set(x, y, "")
+    local text = ""
+    while true do
+        local _, _, char, code = event.pull("key_down")
+        if code == 28 then break
+        elseif code == 14 and unicode.len(text) > 0 then
+            text = unicode.sub(text, 1, -2)
+            gpu.setBackground(0x1F2937)
+            gpu.fill(x, y, maxLen, 1, " ")
+            if hidden then
+                gpu.set(x, y, string.rep("•", unicode.len(text)))
+            else
+                gpu.set(x, y, text)
+            end
+        elseif char >= 32 and char < 127 and unicode.len(text) < maxLen then
+            text = text .. string.char(char)
+            if hidden then
+                gpu.set(x, y, string.rep("•", unicode.len(text)))
+            else
+                gpu.set(x, y, text)
+            end
+        end
+    end
+    gpu.setBackground(colors.bg)
+    return text
+end
+
 local function drawServerUI()
-    gpu.setBackground(0x0000AA)
+    local headerColor = adminMode and colors.adminRed or 0x000080
+    local bgColor = adminMode and colors.adminBg or 0x0000AA
+    
+    gpu.setBackground(bgColor)
     gpu.setForeground(0xFFFFFF)
     gpu.fill(1, 1, w, h, " ")
-    gpu.setBackground(0x000080)
+    gpu.setBackground(headerColor)
     gpu.fill(1, 1, w, 3, " ")
-    local title = "=== " .. DISPLAY_NAME .. " (Loan Server) ==="
+    local title = adminMode and "=== ADMIN MODE - LOAN SERVER ===" or ("=== " .. DISPLAY_NAME .. " (Loan Server) ===")
     gpu.set(math.floor((w - #title) / 2), 2, title)
     
     gpu.setBackground(0x1E1E1E)
@@ -696,17 +769,231 @@ local function drawServerUI()
         local color = 0xAAAAAA
         if entry.category == "LOAN" then color = 0x00FFFF
         elseif entry.category == "ERROR" then color = 0xFF0000
-        elseif entry.category == "SYSTEM" then color = 0x00FF00 end
+        elseif entry.category == "SYSTEM" then color = 0x00FF00
+        elseif entry.category == "ADMIN" then color = 0xFF0000 end
         gpu.setForeground(color)
         local msg = "[" .. entry.time:sub(12) .. "] " .. entry.message
         gpu.set(2, y, msg:sub(1, 76))
         y = y + 1
     end
     
-    gpu.setBackground(0x000080)
+    local footerColor = adminMode and colors.adminRed or 0x000080
+    gpu.setBackground(footerColor)
     gpu.setForeground(0xFFFFFF)
     gpu.fill(1, 25, w, 1, " ")
-    gpu.set(2, 25, "Loan Server Running | Inter-server Encrypted")
+    local footer = adminMode and "Press F1 or F5 to exit admin mode" or "Press F5 for admin panel | Loan Server"
+    gpu.set(2, 25, footer)
+end
+
+-- Admin UI
+local function adminLogin()
+    clearScreen()
+    gpu.setBackground(colors.adminRed)
+    gpu.fill(1, 1, w, 3, " ")
+    gpu.setForeground(0xFFFFFF)
+    local title = "◆ ADMIN AUTHENTICATION ◆"
+    gpu.set(math.floor((w - #title) / 2), 2, title)
+    gpu.setBackground(colors.bg)
+    
+    gpu.setForeground(colors.warning)
+    gpu.set(25, 10, "⚠ RESTRICTED ACCESS - LOAN SERVER")
+    local password = input("Password: ", 12, true, 30)
+    if hashPassword(password) == adminPasswordHash then
+        adminAuthenticated = true
+        adminMode = true
+        gpu.setForeground(colors.success)
+        gpu.set(30, 14, "✓ Authentication successful")
+        log("Admin login successful", "ADMIN")
+        os.sleep(1)
+        return true
+    else
+        gpu.setForeground(colors.error)
+        gpu.set(30, 14, "✗ Authentication failed")
+        log("Admin login FAILED", "SECURITY")
+        os.sleep(2)
+        return false
+    end
+end
+
+local function adminMainMenu()
+    clearScreen()
+    gpu.setBackground(colors.adminRed)
+    gpu.fill(1, 1, w, 3, " ")
+    gpu.setForeground(0xFFFFFF)
+    gpu.set(math.floor((w - 30) / 2), 2, "◆ LOAN SERVER ADMIN PANEL ◆")
+    gpu.setBackground(colors.bg)
+    
+    gpu.setForeground(colors.text)
+    gpu.set(25, 6, "LOAN MANAGEMENT")
+    gpu.setForeground(colors.textDim)
+    gpu.set(25, 8, "1  View Pending Applications")
+    gpu.set(25, 9, "2  Approve Loan")
+    gpu.set(25, 10, "3  Deny Loan")
+    gpu.set(25, 11, "4  View All Loans")
+    gpu.set(25, 12, "5  View Credit Scores")
+    gpu.set(25, 13, "6  Change Admin Password")
+    gpu.setForeground(colors.warning)
+    gpu.set(25, 15, "0  Exit Admin Mode")
+    
+    gpu.setBackground(colors.adminRed)
+    gpu.fill(1, h, w, 1, " ")
+    gpu.setForeground(0xFFFFFF)
+    gpu.set(2, h, "Loan Admin • Pending: " .. stats.pendingLoans .. " | Active: " .. stats.activeLoans)
+    gpu.setBackground(colors.bg)
+    
+    local _, _, char = event.pull("key_down")
+    return char
+end
+
+local function adminViewPending()
+    clearScreen()
+    gpu.setBackground(colors.adminRed)
+    gpu.fill(1, 1, w, 2, " ")
+    gpu.setForeground(0xFFFFFF)
+    gpu.set(25, 1, "◆ PENDING LOAN APPLICATIONS ◆")
+    gpu.setBackground(colors.bg)
+    
+    local pending = getPendingLoans()
+    
+    if #pending == 0 then
+        gpu.setForeground(colors.textDim)
+        gpu.set(30, 10, "No pending applications")
+        gpu.set(25, 12, "Press any key to continue...")
+        event.pull("key_down")
+        return
+    end
+    
+    gpu.setForeground(colors.text)
+    gpu.set(2, 4, "ID")
+    gpu.set(18, 4, "User")
+    gpu.set(32, 4, "Amount")
+    gpu.set(45, 4, "Term")
+    gpu.set(54, 4, "Rate")
+    gpu.set(64, 4, "Credit")
+    
+    local y = 5
+    for i = 1, math.min(18, #pending) do
+        local app = pending[i]
+        gpu.setForeground(colors.textDim)
+        gpu.set(2, y, app.pendingId:sub(-6))
+        gpu.set(18, y, app.username:sub(1, 12))
+        gpu.setForeground(colors.success)
+        gpu.set(32, y, string.format("%.0f CR", app.amount))
+        gpu.setForeground(colors.textDim)
+        gpu.set(45, y, app.termDays .. " days")
+        gpu.set(54, y, string.format("%.1f%%", app.interestRate * 100))
+        local scoreColor = app.creditScore >= 700 and colors.success or app.creditScore >= 650 and colors.warning or colors.error
+        gpu.setForeground(scoreColor)
+        gpu.set(64, y, tostring(app.creditScore))
+        y = y + 1
+    end
+    
+    gpu.setForeground(colors.textDim)
+    gpu.set(25, h-1, "Press any key to continue...")
+    event.pull("key_down")
+end
+
+local function adminApproveLoan()
+    clearScreen()
+    gpu.setBackground(colors.adminRed)
+    gpu.fill(1, 1, w, 2, " ")
+    gpu.setForeground(0xFFFFFF)
+    gpu.set(30, 1, "◆ APPROVE LOAN ◆")
+    gpu.setBackground(colors.bg)
+    
+    local pending = getPendingLoans()
+    if #pending == 0 then
+        gpu.setForeground(colors.error)
+        gpu.set(25, 10, "No pending applications to approve")
+        os.sleep(2)
+        return
+    end
+    
+    gpu.setForeground(colors.text)
+    local y = 4
+    for i = 1, math.min(10, #pending) do
+        local app = pending[i]
+        gpu.set(5, y, string.format("[%d] %s - %s - %.0f CR", i, app.pendingId:sub(-6), app.username, app.amount))
+        y = y + 1
+    end
+    
+    gpu.set(5, y + 2, "Enter number to approve (or 0 to cancel):")
+    local choice = input("Choice: ", y + 3, false, 3)
+    local num = tonumber(choice)
+    
+    if not num or num == 0 or num > #pending then
+        return
+    end
+    
+    local app = pending[num]
+    gpu.setForeground(colors.warning)
+    gpu.set(5, y + 5, "Approving: " .. app.username .. " for " .. app.amount .. " CR")
+    gpu.set(5, y + 6, "Processing...")
+    
+    local ok, loanId, msg = approveLoanApplication(app.pendingId, "Admin")
+    
+    if ok then
+        gpu.setForeground(colors.success)
+        gpu.set(5, y + 7, "✓ Loan approved: " .. loanId)
+    else
+        gpu.setForeground(colors.error)
+        gpu.set(5, y + 7, "✗ Error: " .. msg)
+    end
+    
+    os.sleep(2)
+    drawServerUI()
+end
+
+local function adminDenyLoan()
+    clearScreen()
+    gpu.setBackground(colors.adminRed)
+    gpu.fill(1, 1, w, 2, " ")
+    gpu.setForeground(0xFFFFFF)
+    gpu.set(32, 1, "◆ DENY LOAN ◆")
+    gpu.setBackground(colors.bg)
+    
+    local pending = getPendingLoans()
+    if #pending == 0 then
+        gpu.setForeground(colors.error)
+        gpu.set(25, 10, "No pending applications to deny")
+        os.sleep(2)
+        return
+    end
+    
+    gpu.setForeground(colors.text)
+    local y = 4
+    for i = 1, math.min(10, #pending) do
+        local app = pending[i]
+        gpu.set(5, y, string.format("[%d] %s - %s - %.0f CR", i, app.pendingId:sub(-6), app.username, app.amount))
+        y = y + 1
+    end
+    
+    gpu.set(5, y + 2, "Enter number to deny (or 0 to cancel):")
+    local choice = input("Choice: ", y + 3, false, 3)
+    local num = tonumber(choice)
+    
+    if not num or num == 0 or num > #pending then
+        return
+    end
+    
+    local app = pending[num]
+    local reason = input("Reason: ", y + 5, false, 40)
+    
+    gpu.setForeground(colors.warning)
+    gpu.set(5, y + 7, "Denying application...")
+    
+    local ok, msg = denyLoanApplication(app.pendingId, "Admin", reason)
+    
+    if ok then
+        gpu.setForeground(colors.success)
+        gpu.set(5, y + 8, "✓ Application denied")
+    else
+        gpu.setForeground(colors.error)
+        gpu.set(5, y + 8, "✗ Error: " .. msg)
+    end
+    
+    os.sleep(2)
+    drawServerUI()
 end
 
 -- Message handler with THREADING
@@ -718,7 +1005,6 @@ local function handleMessage(eventType, _, sender, port, distance, message)
     thread.create(function()
         stats.activeThreads = stats.activeThreads + 1
         
-        -- Try relay decryption first (client messages), then server decryption
         local decryptedRelay = decryptRelayMessage(message)
         local decryptedServer = decryptServerMessage(message)
         
@@ -826,6 +1112,10 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                 local ok, loanIdOrMsg = approveLoanApplication(requestData.pendingId, requestData.username or "Admin")
                 response.success, response.message = ok, ok and "Loan approved" or loanIdOrMsg
                 if ok then response.loanId = loanIdOrMsg end
+                
+            elseif requestData.command == "deny_loan" then
+                local ok, msg = denyLoanApplication(requestData.pendingId, requestData.username or "Admin", requestData.reason)
+                response.success, response.message = ok, msg
             end
             
             if requestUsername and not response.username then response.username = requestUsername end
@@ -834,12 +1124,42 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             modem.send(sender, PORT, encrypted)
         end
         
-        drawServerUI()
+        if not adminMode then drawServerUI() end
         stats.activeThreads = stats.activeThreads - 1
     end):detach()
 end
 
--- Find currency server (ENCRYPTED broadcast)
+-- Key press handler
+local function handleKeyPress(eventType, _, _, code)
+    if code == 63 or code == 59 then  -- F5 or F1
+        if adminMode then
+            adminMode = false
+            adminAuthenticated = false
+            drawServerUI()
+            log("Admin mode exited", "ADMIN")
+        else
+            if adminLogin() then
+                while adminMode do
+                    local choice = adminMainMenu()
+                    if choice == string.byte('1') then
+                        adminViewPending()
+                    elseif choice == string.byte('2') then
+                        adminApproveLoan()
+                    elseif choice == string.byte('3') then
+                        adminDenyLoan()
+                    elseif choice == string.byte('0') then
+                        adminMode = false
+                        adminAuthenticated = false
+                        log("Admin mode exited", "ADMIN")
+                    end
+                end
+                drawServerUI()
+            end
+        end
+    end
+end
+
+-- Find currency server
 local function findCurrencyServer()
     log("Searching for currency server...", "SYSTEM")
     local ping = encryptServerMessage(serialization.serialize({type = "loan_server_ping", serverName = DISPLAY_NAME}))
@@ -849,9 +1169,6 @@ end
 
 local function main()
     print("Starting Loan Server...")
-    print("Port: " .. PORT)
-    print("Currency Server Port: " .. CURRENCY_SERVER_PORT)
-    
     loadConfig(); loadLoans(); loadPendingLoans(); loadCreditScores()
     print("Loaded - Loans: " .. stats.totalLoans .. ", Pending: " .. stats.pendingLoans)
     
@@ -859,42 +1176,29 @@ local function main()
     modem.open(CURRENCY_SERVER_PORT)
     modem.setStrength(400)
     
-    print("Wireless network initialized (400 blocks)")
-    print("Listening on PORT " .. PORT)
-    print("Inter-server PORT " .. CURRENCY_SERVER_PORT)
-    print("")
-    
     event.listen("modem_message", handleMessage)
+    event.listen("key_down", handleKeyPress)
     
     print("Searching for currency server...")
     findCurrencyServer()
     
     drawServerUI()
     log("Loan Server started", "SYSTEM")
-    print("Server running!")
+    print("Server running! Press F5 for admin panel")
     
-    -- Periodic currency server ping (every 30 seconds)
     event.timer(30, function()
-        if not currencyServerAddress then
-            print("Currency server not found, retrying...")
-            findCurrencyServer()
-        end
-        drawServerUI()
+        if not currencyServerAddress then findCurrencyServer() end
+        if not adminMode then drawServerUI() end
     end, math.huge)
     
-    -- UI refresh timer (every 5 seconds)
     event.timer(5, function()
-        drawServerUI()
+        if not adminMode then drawServerUI() end
     end, math.huge)
     
     while true do os.sleep(1) end
 end
 
-local success, err = pcall(main)
-if not success then
-    print("Error: " .. tostring(err))
-end
-
+pcall(main)
 modem.close(PORT)
 modem.close(CURRENCY_SERVER_PORT)
 print("Loan Server stopped")
