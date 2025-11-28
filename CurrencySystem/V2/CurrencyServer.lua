@@ -734,8 +734,8 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             return
         end
         
-        -- Handle loan server discovery (encrypted from loan server)
-        if data.type == "loan_server_ping" and port == LOAN_SERVER_PORT and isFromServer then
+        -- Handle loan server discovery (encrypted from loan server on PORT 1000)
+        if data.type == "loan_server_ping" and port == PORT and isFromServer then
             loanServerAddress = sender
             local response = {type = "currency_server_response", serverName = SERVER_NAME}
             local encrypted = encryptServerMessage(serialization.serialize(response))
