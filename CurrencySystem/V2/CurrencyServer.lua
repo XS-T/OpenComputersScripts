@@ -373,34 +373,39 @@ local function clearScreen()
     gpu.fill(1, 1, w, h, " ")
 end
 
+local inputBg = 0x1F2937
+
 local function input(prompt, y, hidden, maxLen)
     maxLen = maxLen or 30
     gpu.setForeground(colors.text)
     gpu.set(2, y, prompt)
     local x = 2 + #prompt
-    gpu.setBackground(colors.inputBg)
+    gpu.setBackground(inputBg)
     gpu.fill(x, y, maxLen + 2, 1, " ")
     x = x + 1
     gpu.set(x, y, "")
     local text = ""
     while true do
-        local _, _, char, code = event.pull("key_down")
-        if code == 28 then break
-        elseif code == 14 and #text > 0 then
-            text = text:sub(1, -2)
-            gpu.setBackground(colors.inputBg)
-            gpu.fill(x, y, maxLen, 1, " ")
-            if hidden then
-                gpu.set(x, y, string.rep("•", #text))
-            else
-                gpu.set(x, y, text)
-            end
-        elseif char >= 32 and char < 127 and #text < maxLen then
-            text = text .. string.char(char)
-            if hidden then
-                gpu.set(x, y, string.rep("•", #text))
-            else
-                gpu.set(x, y, text)
+        local eventName, _, char, code = event.pull()
+        if eventName == "key_down" then
+            if code == 28 then -- Enter
+                break
+            elseif code == 14 and #text > 0 then -- Backspace
+                text = text:sub(1, -2)
+                gpu.setBackground(inputBg)
+                gpu.fill(x, y, maxLen, 1, " ")
+                if hidden then
+                    gpu.set(x, y, string.rep("•", #text))
+                else
+                    gpu.set(x, y, text)
+                end
+            elseif char >= 32 and char < 127 and #text < maxLen then
+                text = text .. string.char(char)
+                if hidden then
+                    gpu.set(x, y, string.rep("•", #text))
+                else
+                    gpu.set(x, y, text)
+                end
             end
         end
     end
