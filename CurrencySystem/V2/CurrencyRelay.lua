@@ -1,13 +1,14 @@
 -- Dual-Server Relay for OpenComputers 1.7.10
 -- Routes to Currency Server (PORT 1000) AND Loan Server (PORT 1001)
 -- Multi-client support via linked cards + Username-based routing
--- VERSION 1.0.0
+-- VERSION 2.0.0 - CLEAN UI
 
 local component = require("component")
 local event = require("event")
 local serialization = require("serialization")
 local computer = require("computer")
 local term = require("term")
+local gpu = component.gpu
 
 if not component.isAvailable("modem") then
     print("ERROR: Wireless Network Card required!")
@@ -26,7 +27,6 @@ local data = component.data
 local tunnels = {}
 for address in component.list("tunnel") do
     table.insert(tunnels, component.proxy(address))
-    print("Found linked card: " .. address:sub(1, 16))
 end
 
 if #tunnels == 0 then
@@ -34,14 +34,26 @@ if #tunnels == 0 then
     return
 end
 
-print("Total linked cards: " .. #tunnels)
-
 -- Configuration
 local CURRENCY_PORT = 1000
 local LOAN_PORT = 1001
 local RELAY_NAME = "Dual-Server Relay"
 local SERVER_NAME = "Empire Credit Union"
 local ENCRYPTION_KEY = data.md5(SERVER_NAME .. "RelaySecure2024")
+
+-- Screen setup
+local w, h = gpu.getResolution()
+gpu.setResolution(80, 25)
+w, h = 80, 25
+
+local colors = {
+    bg = 0x0F0F0F,
+    header = 0x1E3A8A,
+    success = 0x10B981,
+    error = 0xEF4444,
+    text = 0xFFFFFF,
+    textDim = 0x9CA3AF
+}
 
 -- Encryption functions
 local function encryptMessage(plaintext)
@@ -66,10 +78,12 @@ end
 local currencyServerAddress = nil
 local loanServerAddress = nil
 local registeredClients = {}
+local activityLog = {}
 local stats = {
     messagesForwarded = 0,
     messagesToClient = 0,
-    totalMessages = 0
+    totalMessages = 0,
+    uptime = 0
 }
 
 -- Command routing table
@@ -92,9 +106,129 @@ local function isLoanCommand(command)
     return loanCommands[command] == true
 end
 
+-- Activity logging
+local function log(message, category)
+    category = category or "INFO"
+    table.insert(activityLog, 1, {
+        time = os.date("%H:%M:%S"),
+        message = message,
+        category = category
+    })
+    if #activityLog > 10 then
+        table.remove(activityLog)
+    end
+end
+
+-- UI Functions
+local function drawUI()
+    gpu.setBackground(colors.bg)
+    gpu.setForeground(colors.text)
+    gpu.fill(1, 1, w, h, " ")
+    
+    -- Header
+    gpu.setBackground(colors.header)
+    gpu.fill(1, 1, w, 3, " ")
+    local title = "=== DUAL-SERVER RELAY ==="
+    gpu.set(math.floor((w - #title) / 2), 2, title)
+    
+    gpu.setBackground(colors.bg)
+    gpu.setForeground(colors.textDim)
+    
+    -- Status section
+    gpu.setForeground(colors.text)
+    gpu.set(2, 5, "═══ SERVER STATUS ═══")
+    
+    gpu.setForeground(colors.textDim)
+    gpu.set(2, 7, "Currency Server:")
+    if currencyServerAddress then
+        gpu.setForeground(colors.success)
+        gpu.set(25, 7, "✓ CONNECTED")
+        gpu.setForeground(colors.textDim)
+        gpu.set(40, 7, currencyServerAddress:sub(1, 16))
+    else
+        gpu.setForeground(colors.error)
+        gpu.set(25, 7, "✗ SEARCHING...")
+    end
+    
+    gpu.setForeground(colors.textDim)
+    gpu.set(2, 8, "Loan Server:")
+    if loanServerAddress then
+        gpu.setForeground(colors.success)
+        gpu.set(25, 8, "✓ CONNECTED")
+        gpu.setForeground(colors.textDim)
+        gpu.set(40, 8, loanServerAddress:sub(1, 16))
+    else
+        gpu.setForeground(colors.error)
+        gpu.set(25, 8, "✗ SEARCHING...")
+    end
+    
+    -- Stats section
+    gpu.setForeground(colors.text)
+    gpu.set(2, 10, "═══ STATISTICS ═══")
+    
+    gpu.setForeground(colors.textDim)
+    gpu.set(2, 12, "Messages to Server:")
+    gpu.setForeground(colors.text)
+    gpu.set(35, 12, tostring(stats.messagesForwarded))
+    
+    gpu.setForeground(colors.textDim)
+    gpu.set(2, 13, "Messages to Client:")
+    gpu.setForeground(colors.text)
+    gpu.set(35, 13, tostring(stats.messagesToClient))
+    
+    gpu.setForeground(colors.textDim)
+    gpu.set(2, 14, "Total Messages:")
+    gpu.setForeground(colors.text)
+    gpu.set(35, 14, tostring(stats.totalMessages))
+    
+    gpu.setForeground(colors.textDim)
+    gpu.set(2, 15, "Active Clients:")
+    gpu.setForeground(colors.text)
+    local clientCount = 0
+    for key in pairs(registeredClients) do
+        if not key:match("^_") then
+            clientCount = clientCount + 1
+        end
+    end
+    gpu.set(35, 15, tostring(clientCount))
+    
+    gpu.setForeground(colors.textDim)
+    gpu.set(2, 16, "Linked Cards:")
+    gpu.setForeground(colors.text)
+    gpu.set(35, 16, tostring(#tunnels))
+    
+    -- Activity log
+    gpu.setForeground(colors.text)
+    gpu.set(2, 18, "═══ ACTIVITY LOG ═══")
+    
+    local y = 19
+    for i = 1, math.min(5, #activityLog) do
+        local entry = activityLog[i]
+        local color = colors.textDim
+        if entry.category == "SUCCESS" then
+            color = colors.success
+        elseif entry.category == "ERROR" then
+            color = colors.error
+        elseif entry.category == "ROUTE" then
+            color = 0x3B82F6
+        end
+        
+        gpu.setForeground(color)
+        local msg = "[" .. entry.time .. "] " .. entry.message
+        gpu.set(2, y, msg:sub(1, 76))
+        y = y + 1
+    end
+    
+    -- Footer
+    gpu.setBackground(colors.header)
+    gpu.setForeground(colors.text)
+    gpu.fill(1, h, w, 1, " ")
+    gpu.set(2, h, "Relay Running • Press Ctrl+C to stop • Uptime: " .. math.floor(stats.uptime) .. "s")
+end
+
 -- Find servers
 local function findServers()
-    print("Searching for servers...")
+    log("Searching for servers...", "INFO")
     
     local currencyPing = serialization.serialize({type = "relay_ping", relay_name = RELAY_NAME})
     local loanPing = serialization.serialize({type = "relay_ping", relay_name = RELAY_NAME})
@@ -116,18 +250,24 @@ local function findServers()
                 if success and data and data.type == "server_response" then
                     if port == CURRENCY_PORT and not currencyServerAddress then
                         currencyServerAddress = sender
-                        print("✓ Currency Server found: " .. sender:sub(1, 8))
+                        log("Currency server found", "SUCCESS")
                     elseif port == LOAN_PORT and not loanServerAddress then
                         loanServerAddress = sender
-                        print("✓ Loan Server found: " .. sender:sub(1, 8))
+                        log("Loan server found", "SUCCESS")
                     end
                 end
             end
         end
     end
     
-    if not currencyServerAddress then print("✗ Currency Server not found") end
-    if not loanServerAddress then print("✗ Loan Server not found") end
+    if not currencyServerAddress then
+        log("Currency server not found", "ERROR")
+    end
+    if not loanServerAddress then
+        log("Loan server not found", "ERROR")
+    end
+    
+    drawUI()
 end
 
 -- Message handler
@@ -169,31 +309,42 @@ local function handleMessage(eventType, _, sender, port, distance, message)
                 lastSeen = os.time()
             }
             
+            log("Client registered", "SUCCESS")
+            
             local ack = {
                 type = "relay_ack",
                 relay_name = RELAY_NAME,
                 server_connected = (currencyServerAddress ~= nil and loanServerAddress ~= nil)
             }
             sourceTunnel.send(serialization.serialize(ack))
+            drawUI()
             return
         end
         
         if data.type == "client_deregister" then
             registeredClients[data.tunnelAddress or sender] = nil
+            log("Client disconnected", "INFO")
+            drawUI()
             return
         end
         
         -- Route to appropriate server
-        local targetPort, targetServer
+        local targetPort, targetServer, serverName
         if isLoanCommand(data.command) then
             targetPort = LOAN_PORT
             targetServer = loanServerAddress
+            serverName = "Loan"
         else
             targetPort = CURRENCY_PORT
             targetServer = currencyServerAddress
+            serverName = "Currency"
         end
         
-        if not targetServer then return end
+        if not targetServer then
+            log("No " .. serverName .. " server", "ERROR")
+            drawUI()
+            return
+        end
         
         -- Store for response routing (username-based)
         if data.username then
@@ -208,6 +359,10 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         local encrypted = encryptMessage(message)
         modem.send(targetServer, targetPort, encrypted)
         stats.messagesForwarded = stats.messagesForwarded + 1
+        
+        if data.command then
+            log("→ " .. serverName .. ": " .. data.command, "ROUTE")
+        end
         
     else
         -- ═══════════════════════════════════════════════════════
@@ -246,6 +401,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             if targetTunnel then
                 targetTunnel.send(decrypted)
                 stats.messagesToClient = stats.messagesToClient + 1
+                log("← Client: Response sent", "ROUTE")
             end
         else
             -- Server discovery
@@ -253,10 +409,12 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             if success and data and data.type == "server_response" then
                 if port == CURRENCY_PORT and not currencyServerAddress then
                     currencyServerAddress = sender
-                    print("✓ Currency Server connected: " .. sender:sub(1, 8))
+                    log("Currency server connected", "SUCCESS")
+                    drawUI()
                 elseif port == LOAN_PORT and not loanServerAddress then
                     loanServerAddress = sender
-                    print("✓ Loan Server connected: " .. sender:sub(1, 8))
+                    log("Loan server connected", "SUCCESS")
+                    drawUI()
                 end
             end
         end
@@ -267,34 +425,31 @@ end
 local function main()
     term.clear()
     print("═══════════════════════════════════════════════════════")
-    print("Dual-Server Relay - " .. RELAY_NAME)
+    print("Dual-Server Relay - Starting Up")
     print("═══════════════════════════════════════════════════════")
     print("")
-    print("Linked Cards: " .. #tunnels)
-    for i, tunnel in ipairs(tunnels) do
-        print("  [" .. i .. "] " .. tunnel.getChannel():sub(1, 24))
-    end
-    print("")
+    print("Initializing...")
     
     modem.open(CURRENCY_PORT)
     modem.open(LOAN_PORT)
     modem.setStrength(400)
     
-    print("Ports opened:")
-    print("  Currency: " .. CURRENCY_PORT)
-    print("  Loans:    " .. LOAN_PORT)
+    print("✓ Wireless ports opened (1000, 1001)")
+    print("✓ Found " .. #tunnels .. " linked card(s)")
     print("")
+    print("Searching for servers...")
     
     findServers()
     
     print("")
-    print("Relay running!")
-    print("═══════════════════════════════════════════════════════")
-    print("")
+    print("Relay initialized!")
+    os.sleep(1)
+    
+    drawUI()
     
     event.listen("modem_message", handleMessage)
     
-    -- Periodic server ping
+    -- Periodic server ping and cleanup
     event.timer(30, function()
         if not currencyServerAddress or not loanServerAddress then
             findServers()
@@ -307,21 +462,40 @@ local function main()
                 if now - client.timestamp > 60 then
                     registeredClients[key] = nil
                 end
+            elseif not key:match("^_") and client.lastSeen then
+                if now - client.lastSeen > 300 then
+                    registeredClients[key] = nil
+                    log("Client timeout", "INFO")
+                end
             end
         end
+        
+        drawUI()
+    end, math.huge)
+    
+    -- UI refresh timer
+    event.timer(5, function()
+        drawUI()
+    end, math.huge)
+    
+    -- Uptime counter
+    event.timer(1, function()
+        stats.uptime = stats.uptime + 1
     end, math.huge)
     
     while true do
         os.sleep(1)
-        print("\rForwarded: " .. stats.messagesForwarded .. " | To Clients: " .. stats.messagesToClient .. " | Total: " .. stats.totalMessages .. "   ", false)
     end
 end
 
 local success, err = pcall(main)
 if not success then
+    term.clear()
     print("Error: " .. tostring(err))
 end
 
+event.ignore("modem_message", handleMessage)
 modem.close(CURRENCY_PORT)
 modem.close(LOAN_PORT)
+term.clear()
 print("Relay stopped")
