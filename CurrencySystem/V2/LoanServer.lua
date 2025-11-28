@@ -1,7 +1,7 @@
 -- Loan Server for OpenComputers 1.7.10
 -- CLIENT COMMUNICATION: Via relay only (encrypted)
 -- CURRENCY SERVER: Direct wireless (encrypted)
--- VERSION 1.2.0 - CORRECT ARCHITECTURE
+-- VERSION 1.3.0 - FIXED UI & DISCOVERY
 
 local component = require("component")
 local event = require("event")
@@ -9,11 +9,14 @@ local serialization = require("serialization")
 local filesystem = require("filesystem")
 local computer = require("computer")
 local thread = require("thread")
+local gpu = component.gpu
 local term = require("term")
+local unicode = require("unicode")
 
 local PORT = 1001
 local CURRENCY_SERVER_PORT = 1000
-local SERVER_NAME = "Empire Credit Union - Loans"
+local SERVER_NAME = "Empire Credit Union"  -- MUST match relay for encryption!
+local DISPLAY_NAME = "Empire Credit Union - Loans"
 local DATA_DIR = "/home/loans/"
 
 local LOAN_CONFIG = {
@@ -46,7 +49,7 @@ local data = component.data
 
 -- TWO DIFFERENT ENCRYPTION KEYS!
 local RELAY_ENCRYPTION_KEY = data.md5(SERVER_NAME .. "RelaySecure2024")
-local INTER_SERVER_KEY = data.md5("CurrencyLoanServerComm2024")  -- Shared with currency server
+local INTER_SERVER_KEY = data.md5("CurrencyLoanServerComm2024")
 local DATA_ENCRYPTION_KEY = data.md5(SERVER_NAME .. "LoanSecurity2024")
 
 -- Relay encryption (for CLIENT messages via relay)
@@ -123,6 +126,15 @@ local stats = {
     activeThreads = 0,
     totalRequests = 0,
     currencyServerRequests = 0
+}
+
+local w, h = gpu.getResolution()
+gpu.setResolution(80, 25)
+w, h = 80, 25
+
+local colors = {
+    bg = 0x0F0F0F, header = 0x1E3A8A, accent = 0x3B82F6, success = 0x10B981,
+    error = 0xEF4444, warning = 0xF59E0B, text = 0xFFFFFF, textDim = 0x9CA3AF
 }
 
 if not filesystem.exists(DATA_DIR) then
@@ -245,7 +257,7 @@ local function callCurrencyServer(command, requestData)
     return {success = false, message = "Currency server timeout"}
 end
 
--- [All loan functions remain the same - getLoanEligibility, submitLoanApplication, etc.]
+-- Loan Functions
 local function getLoanEligibility(username)
     local credit = creditScores[username]
     if not credit then
@@ -475,7 +487,7 @@ local function getPendingLoans()
     return pending
 end
 
--- [Save/load functions - same as before]
+-- Save/Load Functions
 function saveConfig()
     local config = {nextLoanId = nextLoanId, nextPendingId = nextPendingId}
     local file = io.open(DATA_DIR .. "loan_config.cfg", "w")
@@ -605,26 +617,96 @@ function loadCreditScores()
     return false
 end
 
+-- UI Functions
 local function drawServerUI()
-    term.clear()
-    print("═══════════════════════════════════════════════════════")
-    print("Loan Server - " .. SERVER_NAME)
-    print("═══════════════════════════════════════════════════════")
-    print("")
-    print("Port: " .. PORT)
-    print("Loans: " .. stats.totalLoans .. " | Active: " .. stats.activeLoans .. " | Pending: " .. stats.pendingLoans)
-    print("Threads: " .. stats.activeThreads .. " | Requests: " .. stats.totalRequests)
-    print("")
+    gpu.setBackground(0x0000AA)
+    gpu.setForeground(0xFFFFFF)
+    gpu.fill(1, 1, w, h, " ")
+    gpu.setBackground(0x000080)
+    gpu.fill(1, 1, w, 3, " ")
+    local title = "=== " .. DISPLAY_NAME .. " (Loan Server) ==="
+    gpu.set(math.floor((w - #title) / 2), 2, title)
+    
+    gpu.setBackground(0x1E1E1E)
+    gpu.setForeground(0x00FF00)
+    gpu.fill(1, 4, w, 2, " ")
+    gpu.set(2, 4, "Total Loans: " .. stats.totalLoans)
+    gpu.set(20, 4, "Active: " .. stats.activeLoans)
+    gpu.set(35, 4, "Pending: " .. stats.pendingLoans)
+    gpu.set(52, 4, "Port: " .. PORT)
+    gpu.set(65, 4, "Threads: " .. stats.activeThreads)
+    
+    gpu.setForeground(0xFFFF00)
+    gpu.set(2, 5, "Mode: Loans Only")
+    gpu.setForeground(0xAAAAAA)
+    gpu.set(25, 5, "Requests: " .. stats.totalRequests)
+    gpu.set(45, 5, "CServer Calls: " .. stats.currencyServerRequests)
+    
     if currencyServerAddress then
-        print("Currency Server: ✓ (" .. currencyServerAddress:sub(1, 8) .. ")")
+        gpu.setForeground(0x00FF00)
+        gpu.set(65, 5, "Currency: ✓")
     else
-        print("Currency Server: ✗ Searching...")
+        gpu.setForeground(0xFF0000)
+        gpu.set(65, 5, "Currency: ✗")
     end
-    print("")
-    print("Recent Activity:")
-    for i = 1, math.min(5, #transactionLog) do
-        print("  " .. transactionLog[i].message:sub(1, 60))
+    
+    gpu.setBackground(0x2D2D2D)
+    gpu.setForeground(0xFFFF00)
+    gpu.fill(1, 7, w, 1, " ")
+    gpu.set(2, 7, "Recent Loans:")
+    
+    gpu.setForeground(0xFFFFFF)
+    gpu.set(2, 8, "Loan ID")
+    gpu.set(18, 8, "User")
+    gpu.set(35, 8, "Amount")
+    gpu.set(50, 8, "Remaining")
+    gpu.set(65, 8, "Status")
+    
+    local sortedLoans = {}
+    for _, loan in pairs(loanIndex) do table.insert(sortedLoans, loan) end
+    table.sort(sortedLoans, function(a, b) return a.issued > b.issued end)
+    
+    local y = 9
+    for i = 1, math.min(10, #sortedLoans) do
+        local loan = sortedLoans[i]
+        gpu.setForeground(0xCCCCCC)
+        gpu.set(2, y, loan.loanId)
+        local name = loan.username
+        if #name > 12 then name = name:sub(1, 10) .. ".." end
+        gpu.set(18, y, name)
+        gpu.setForeground(0x00FF00)
+        gpu.set(35, y, string.format("%.2f", loan.principal))
+        gpu.setForeground(loan.status == "active" and 0xFFFF00 or 0x00FF00)
+        gpu.set(50, y, string.format("%.2f", loan.remaining))
+        local statusColor = loan.status == "active" and 0xFFFF00 or loan.status == "paid" and 0x00FF00 or 0xFF0000
+        gpu.setForeground(statusColor)
+        gpu.set(65, y, loan.status:upper())
+        y = y + 1
     end
+    
+    gpu.setBackground(0x1E1E1E)
+    gpu.setForeground(0xFFFF00)
+    gpu.fill(1, 20, w, 1, " ")
+    gpu.set(2, 20, "Recent Activity:")
+    
+    gpu.setBackground(0x2D2D2D)
+    y = 21
+    for i = 1, math.min(4, #transactionLog) do
+        local entry = transactionLog[i]
+        local color = 0xAAAAAA
+        if entry.category == "LOAN" then color = 0x00FFFF
+        elseif entry.category == "ERROR" then color = 0xFF0000
+        elseif entry.category == "SYSTEM" then color = 0x00FF00 end
+        gpu.setForeground(color)
+        local msg = "[" .. entry.time:sub(12) .. "] " .. entry.message
+        gpu.set(2, y, msg:sub(1, 76))
+        y = y + 1
+    end
+    
+    gpu.setBackground(0x000080)
+    gpu.setForeground(0xFFFFFF)
+    gpu.fill(1, 25, w, 1, " ")
+    gpu.set(2, 25, "Loan Server Running | Inter-server Encrypted")
 end
 
 -- Message handler with THREADING
@@ -636,7 +718,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
     thread.create(function()
         stats.activeThreads = stats.activeThreads + 1
         
-        -- Try relay decryption first (client messages)
+        -- Try relay decryption first (client messages), then server decryption
         local decryptedRelay = decryptRelayMessage(message)
         local decryptedServer = decryptServerMessage(message)
         
@@ -650,8 +732,8 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             return
         end
         
-        -- Currency server discovery (ENCRYPTED)
-        if requestData.type == "currency_server_response" and isFromServer then
+        -- Currency server discovery response (ENCRYPTED)
+        if requestData.type == "currency_server_response" and port == CURRENCY_SERVER_PORT and isFromServer then
             currencyServerAddress = sender
             log("Currency server connected: " .. sender:sub(1, 8), "SYSTEM")
             drawServerUI()
@@ -661,7 +743,7 @@ local function handleMessage(eventType, _, sender, port, distance, message)
         
         -- Relay ping (ENCRYPTED)
         if requestData.type == "relay_ping" and isFromRelay then
-            local response = {type = "server_response", serverName = SERVER_NAME}
+            local response = {type = "server_response", serverName = DISPLAY_NAME}
             local encrypted = encryptRelayMessage(serialization.serialize(response))
             modem.send(sender, PORT, encrypted)
             stats.activeThreads = stats.activeThreads - 1
@@ -760,13 +842,16 @@ end
 -- Find currency server (ENCRYPTED broadcast)
 local function findCurrencyServer()
     log("Searching for currency server...", "SYSTEM")
-    local ping = encryptServerMessage(serialization.serialize({type = "loan_server_ping", serverName = SERVER_NAME}))
+    local ping = encryptServerMessage(serialization.serialize({type = "loan_server_ping", serverName = DISPLAY_NAME}))
     modem.broadcast(CURRENCY_SERVER_PORT, ping)
     os.sleep(2)
 end
 
 local function main()
     print("Starting Loan Server...")
+    print("Port: " .. PORT)
+    print("Currency Server Port: " .. CURRENCY_SERVER_PORT)
+    
     loadConfig(); loadLoans(); loadPendingLoans(); loadCreditScores()
     print("Loaded - Loans: " .. stats.totalLoans .. ", Pending: " .. stats.pendingLoans)
     
@@ -774,20 +859,42 @@ local function main()
     modem.open(CURRENCY_SERVER_PORT)
     modem.setStrength(400)
     
+    print("Wireless network initialized (400 blocks)")
+    print("Listening on PORT " .. PORT)
+    print("Inter-server PORT " .. CURRENCY_SERVER_PORT)
+    print("")
+    
     event.listen("modem_message", handleMessage)
     
+    print("Searching for currency server...")
     findCurrencyServer()
+    
     drawServerUI()
     log("Loan Server started", "SYSTEM")
+    print("Server running!")
     
+    -- Periodic currency server ping (every 30 seconds)
     event.timer(30, function()
-        if not currencyServerAddress then findCurrencyServer() end
+        if not currencyServerAddress then
+            print("Currency server not found, retrying...")
+            findCurrencyServer()
+        end
+        drawServerUI()
+    end, math.huge)
+    
+    -- UI refresh timer (every 5 seconds)
+    event.timer(5, function()
         drawServerUI()
     end, math.huge)
     
     while true do os.sleep(1) end
 end
 
-pcall(main)
+local success, err = pcall(main)
+if not success then
+    print("Error: " .. tostring(err))
+end
+
 modem.close(PORT)
 modem.close(CURRENCY_SERVER_PORT)
+print("Loan Server stopped")
