@@ -732,8 +732,8 @@ local function handleMessage(eventType, _, sender, port, distance, message)
             return
         end
         
-        -- Currency server discovery response (ENCRYPTED)
-        if requestData.type == "currency_server_response" and port == CURRENCY_SERVER_PORT and isFromServer then
+        -- Currency server discovery response (ENCRYPTED on PORT 1001)
+        if requestData.type == "currency_server_response" and port == PORT and isFromServer then
             currencyServerAddress = sender
             log("Currency server connected: " .. sender:sub(1, 8), "SYSTEM")
             drawServerUI()
