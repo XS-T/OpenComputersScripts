@@ -250,7 +250,7 @@ local function callCurrencyServer(command, requestData)
         local eventData = {event.pull(0.5, "modem_message")}
         if eventData[1] then
             local _, _, sender, port, _, msg = table.unpack(eventData)
-            if sender == currencyServerAddress and port == CURRENCY_SERVER_PORT then
+            if sender == currencyServerAddress and port == PORT then  -- Currency sends response on OUR port (1001)
                 local decrypted = decryptServerMessage(msg)
                 if decrypted then
                     local success, response = pcall(serialization.unserialize, decrypted)
